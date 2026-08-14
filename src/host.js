@@ -539,10 +539,14 @@ return {
         if (out.indexOf('fatal:') >= 0) return { ok: false, error: out.split(/\r?\n/).find((x) => x.indexOf('fatal:') >= 0) || 'git 执行失败' }
         // git 命令失败时优雅降级：分支名来自 .git/HEAD，变更列表显示原因
         const gitBlocked = !out.trim() && r.code !== 0
-        const branch = gitBlocked ? await branchFromHead(repo.path) : ''
         const lines = out.split(/\r?\n/).map((x) => x.trim()).filter((x) => x)
+        let branch = ''
         let start = 0
-        if (lines.length > 0 && lines[0].indexOf('## ') === 0) start = 1
+        if (lines.length > 0 && lines[0].indexOf('## ') === 0) {
+          branch = lines[0].slice(3).split('...')[0].trim()
+          start = 1
+        }
+        if (!branch && gitBlocked) branch = await branchFromHead(repo.path)
         const entries = []
         for (let i = start; i < lines.length; i++) {
           const ln = lines[i]
