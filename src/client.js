@@ -16,7 +16,7 @@ return {
     } catch (e) {}
     const SKIN_LIST = ['light', 'night', 'ocean', 'forest', 'sunset', 'graphite']
     const SKIN_NAMES = { light: '亮色', night: '暗夜', ocean: '海洋', forest: '森林', sunset: '日落', graphite: '水墨' }
-    const store = { openPanel: 'none', state: null, connected: false, lastError: '', insertHint: '', skin: initSkin }
+    const store = { openPanel: 'none', workbench: false, state: null, connected: false, lastError: '', insertHint: '', skin: initSkin }
     const listeners = new Set()
     const emit = () => { for (const fn of listeners) { try { fn() } catch (e) {} } }
     const patch = (p) => { Object.assign(store, p); emit() }
@@ -189,8 +189,8 @@ return {
       )
     }
 
-    // ── 监督大弹层：智能体树 + 任务看板 + 工作流/目标 ──
-    function AgentsPanel(props) {
+    // ── 监督内容（共享）：智能体树 + 任务看板 + 变更/文件 + 工作流/目标 ──
+    function SupervisionTabs(props) {
       const s = useStore()
       const st = s.state || { agents: [], jobs: [], workflows: [], logs: [], errors: [], goal: null, usage: null }
       const [tab, setTab] = React.useState('agents')
@@ -208,44 +208,83 @@ return {
       }
       const u = st.usage
       const totalsLine = u && u.totals ? '模型用量（本会话进程累计）：' + u.totals.calls + ' 次调用 · 输入约 ' + u.totals.input + ' tok · 输出约 ' + u.totals.output + ' tok（启发式估测）' : ''
+      return el('div', { className: 'dk-supervision' },
+        el('div', { className: 'dk-super-tabs' },
+          el('button', { className: 'dk-tab' + (tab === 'agents' ? ' dk-tab-active' : ''), onClick: () => setTab('agents') }, '智能体 ' + agents.length),
+          el('button', { className: 'dk-tab' + (tab === 'jobs' ? ' dk-tab-active' : ''), onClick: () => setTab('jobs') }, '任务 ' + (st.jobs || []).length),
+          el('button', { className: 'dk-tab' + (tab === 'scm' ? ' dk-tab-active' : ''), onClick: () => setTab('scm') }, '变更'),
+          el('button', { className: 'dk-tab' + (tab === 'files' ? ' dk-tab-active' : ''), onClick: () => setTab('files') }, '文件'),
+          el('button', { className: 'dk-tab' + (tab === 'wf' ? ' dk-tab-active' : ''), onClick: () => setTab('wf') }, '工作流 ' + (st.workflows || []).length),
+          el('button', { className: 'dk-tab' + (tab === 'goal' ? ' dk-tab-active' : ''), onClick: () => setTab('goal') }, '目标'),
+          el('div', { className: 'dk-spacer' }),
+          el('button', { className: 'dk-btn-sm', onClick: refresh, title: '立即刷新' }, '刷新'),
+        ),
+        el('div', { className: 'dk-panel-body' },
+          tab === 'agents' ? el('div', null,
+            totalsLine ? el('div', { className: 'dk-tip' }, totalsLine) : null,
+            agents.length === 0 ? el('div', { className: 'dk-empty' }, '当前没有已注册的智能体。') : agents.map((a) => el(AgentRow, { key: a.id, agent: a })),
+          ) : tab === 'jobs' ? el('div', null,
+            el('div', { className: 'dk-h3' }, '后台任务看板（按状态分列）'),
+            (st.jobs || []).length === 0 ? el('div', { className: 'dk-empty' }, '当前没有后台任务。') : el('div', { className: 'dk-kanban' },
+              el('div', { className: 'dk-kcol' }, el('div', { className: 'dk-khead' }, '🟢 进行中 ' + group.running.length), group.running.map((j) => el(JobCard, { key: j.id, j: j, onKill: kill }))),
+              el('div', { className: 'dk-kcol' }, el('div', { className: 'dk-khead' }, '🔵 等待 ' + group.idle.length), group.idle.map((j) => el(JobCard, { key: j.id, j: j, onKill: kill }))),
+              el('div', { className: 'dk-kcol' }, el('div', { className: 'dk-khead' }, '⚪ 已结束 ' + group.done.length), group.done.map((j) => el(JobCard, { key: j.id, j: j, onKill: kill }))),
+            ),
+          ) : tab === 'scm' ? el(ScmTab, null) : tab === 'files' ? el(FilesTab, null) : tab === 'wf' ? el('div', null,
+            el('div', { className: 'dk-h3' }, '工作流（' + (st.workflows || []).length + '）'),
+            (st.workflows || []).length === 0 ? el('div', { className: 'dk-empty' }, '暂无进行中的工作流。') : (st.workflows || []).map((w) => el('div', { className: 'dk-agentrow', key: w.id || w.name },
+              StatusBadge(w.status), el('span', null, w.name || w.id),
+              w.phase ? el('span', { className: 'dk-note' }, '阶段: ' + w.phase) : null,
+            )),
+            el('div', { className: 'dk-h3' }, '最近日志'),
+            (st.logs || []).length === 0 ? el('div', { className: 'dk-empty' }, '无日志。') : (st.logs || []).map((l, i) => el('div', { className: 'dk-log', key: 'l' + i }, (l.timeText || '') + '  ' + l.message)),
+            el('div', { className: 'dk-h3' }, '最近错误'),
+            (st.errors || []).length === 0 ? el('div', { className: 'dk-empty' }, '无错误记录。') : (st.errors || []).map((er, i) => el('div', { className: 'dk-log dk-log-err', key: 'e' + i }, (er.timeText || '') + '  [' + er.id + ']  ' + er.message)),
+          ) : el(GoalTab, { st: st }),
+        ),
+      )
+    }
+
+    // ── 监督底部弹层（会话标题栏 🧭 按钮）──
+    function AgentsPanel(props) {
       return el('div', { className: 'dk-panel-backdrop', onMouseDown: () => props.onClose() },
         el('div', { className: 'dk-panel dk-agents', onMouseDown: (ev) => ev.stopPropagation() },
           el('div', { className: 'dk-panel-head' },
             el('span', { className: 'dk-panel-title' }, '🧭 智能体监督'),
-            el('button', { className: 'dk-tab' + (tab === 'agents' ? ' dk-tab-active' : ''), onClick: () => setTab('agents') }, '智能体 ' + agents.length),
-            el('button', { className: 'dk-tab' + (tab === 'jobs' ? ' dk-tab-active' : ''), onClick: () => setTab('jobs') }, '任务 ' + (st.jobs || []).length),
-            el('button', { className: 'dk-tab' + (tab === 'scm' ? ' dk-tab-active' : ''), onClick: () => setTab('scm') }, '变更'),
-            el('button', { className: 'dk-tab' + (tab === 'files' ? ' dk-tab-active' : ''), onClick: () => setTab('files') }, '文件'),
-            el('button', { className: 'dk-tab' + (tab === 'wf' ? ' dk-tab-active' : ''), onClick: () => setTab('wf') }, '工作流 ' + (st.workflows || []).length),
-            el('button', { className: 'dk-tab' + (tab === 'goal' ? ' dk-tab-active' : ''), onClick: () => setTab('goal') }, '目标'),
             el('div', { className: 'dk-spacer' }),
-            el('button', { className: 'dk-btn-sm', onClick: refresh, title: '立即刷新' }, '刷新'),
             el('button', { className: 'dk-close', onClick: props.onClose, title: '关闭' }, '✕'),
           ),
-          el('div', { className: 'dk-panel-body' },
-            tab === 'agents' ? el('div', null,
-              totalsLine ? el('div', { className: 'dk-tip' }, totalsLine) : null,
-              agents.length === 0 ? el('div', { className: 'dk-empty' }, '当前没有已注册的智能体。') : agents.map((a) => el(AgentRow, { key: a.id, agent: a })),
-            ) : tab === 'jobs' ? el('div', null,
-              el('div', { className: 'dk-h3' }, '后台任务看板（按状态分列）'),
-              (st.jobs || []).length === 0 ? el('div', { className: 'dk-empty' }, '当前没有后台任务。') : el('div', { className: 'dk-kanban' },
-                el('div', { className: 'dk-kcol' }, el('div', { className: 'dk-khead' }, '🟢 进行中 ' + group.running.length), group.running.map((j) => el(JobCard, { key: j.id, j: j, onKill: kill }))),
-                el('div', { className: 'dk-kcol' }, el('div', { className: 'dk-khead' }, '🔵 等待 ' + group.idle.length), group.idle.map((j) => el(JobCard, { key: j.id, j: j, onKill: kill }))),
-                el('div', { className: 'dk-kcol' }, el('div', { className: 'dk-khead' }, '⚪ 已结束 ' + group.done.length), group.done.map((j) => el(JobCard, { key: j.id, j: j, onKill: kill }))),
-              ),
-            ) : tab === 'scm' ? el(ScmTab, null) : tab === 'files' ? el(FilesTab, null) : tab === 'wf' ? el('div', null,
-              el('div', { className: 'dk-h3' }, '工作流（' + (st.workflows || []).length + '）'),
-              (st.workflows || []).length === 0 ? el('div', { className: 'dk-empty' }, '暂无进行中的工作流。') : (st.workflows || []).map((w) => el('div', { className: 'dk-agentrow', key: w.id || w.name },
-                StatusBadge(w.status), el('span', null, w.name || w.id),
-                w.phase ? el('span', { className: 'dk-note' }, '阶段: ' + w.phase) : null,
-              )),
-              el('div', { className: 'dk-h3' }, '最近日志'),
-              (st.logs || []).length === 0 ? el('div', { className: 'dk-empty' }, '无日志。') : (st.logs || []).map((l, i) => el('div', { className: 'dk-log', key: 'l' + i }, (l.timeText || '') + '  ' + l.message)),
-              el('div', { className: 'dk-h3' }, '最近错误'),
-              (st.errors || []).length === 0 ? el('div', { className: 'dk-empty' }, '无错误记录。') : (st.errors || []).map((er, i) => el('div', { className: 'dk-log dk-log-err', key: 'e' + i }, (er.timeText || '') + '  [' + er.id + ']  ' + er.message)),
-            ) : el(GoalTab, { st: st }),
-          ),
+          el(SupervisionTabs, null),
         ),
+      )
+    }
+
+    // ── 侧边栏工作台（左侧停靠常驻面板，侧边栏底部 🧰 按钮开关）──
+    function WorkbenchPanel() {
+      const s = useStore()
+      if (!s.workbench) return null
+      return el('div', { className: 'dk-workbench' },
+        el('div', { className: 'dk-panel-head' },
+          el('span', { className: 'dk-panel-title' }, '🧰 开发工作台'),
+          el('div', { className: 'dk-spacer' }),
+          el('button', { className: 'dk-close', onClick: () => patch({ workbench: false }), title: '关闭' }, '✕'),
+        ),
+        el(SupervisionTabs, null),
+      )
+    }
+
+    function WorkbenchButton() {
+      const s = useStore()
+      const st = s.state || { agents: [] }
+      const running = (st.agents || []).filter((a) => a.status === 'running').length
+      return el('button', {
+        className: 'dk-footbtn' + (s.workbench ? ' dk-footbtn-on' : ''),
+        title: '开发工作台（智能体/任务/变更/文件/工作流/目标）',
+        onClick: () => patch({ workbench: !s.workbench }),
+      },
+        el('span', { className: 'dk-footicon' }, '🧰'),
+        el('span', { className: 'dk-footlabel' }, '工作台'),
+        running > 0 ? el('span', { className: 'dk-badge' }, String(running)) : null,
       )
     }
 
@@ -693,7 +732,7 @@ return {
       React.useEffect(() => {
         const onKey = (ev) => {
           try {
-            if (ev.key === 'Escape') { patch({ openPanel: 'none' }); return }
+            if (ev.key === 'Escape') { patch({ openPanel: 'none', workbench: false }); return }
             if (!(ev.ctrlKey && ev.shiftKey)) return
             const k = (ev.key || '').toLowerCase()
             if (k === 'g') { ev.preventDefault(); patch({ openPanel: store.openPanel === 'gallery' ? 'none' : 'gallery' }) }
@@ -713,6 +752,8 @@ return {
     slots.inject('conversation.input.overlay', () => slots.register({ name: 'conversation.input.overlay', id: 'devkit-agents-panel', order: 31, label: '监督弹层' }, () => el(AgentsOverlay, null)))
     slots.inject('conversation.session.header.actions', () => slots.register({ name: 'conversation.session.header.actions', id: 'devkit-agents-btn', order: 30, label: '智能体监督' }, () => el(AgentsButton, null)))
     slots.inject('settings.section', () => slots.register({ name: 'settings.section', id: 'devkit', order: 30, label: '开发增强套件' }, (props) => el(SettingsSection, props)))
+    slots.inject('sidebar.footer.action', () => slots.register({ name: 'sidebar.footer.action', id: 'devkit-workbench-btn', order: 10, label: '工作台' }, () => el(WorkbenchButton, null)))
+    slots.inject('shell.overlay', () => slots.register({ name: 'shell.overlay', id: 'devkit-workbench', order: 10, label: '开发工作台' }, () => el(WorkbenchPanel, null)))
     slots.inject('shell.overlay', () => slots.register({ name: 'shell.overlay', id: 'devkit-boot', order: 10, label: '开发套件引导' }, () => el(Boot, null)))
     slots.inject('tool.view.cordis', () => slots.register({ name: 'tool.view.cordis', key: 'self' }, () => el(SelfCard, null)))
 
@@ -747,5 +788,9 @@ return {
     styles.insert(".dk-filerow:first-child{border-top:none}.dk-filerow:hover{background:rgba(79,140,255,.1)}.dk-ficon{flex:none}.dk-fname{flex:1;min-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.dk-fsize{font-size:11px;color:#8a8f98}.dk-preview{margin-top:10px;border:1px solid rgba(110,120,140,.2);border-radius:8px;overflow:hidden}")
     styles.insert(".dk-preview-head{display:flex;align-items:center;gap:8px;padding:6px 10px;font-size:12px;font-weight:600;background:rgba(79,140,255,.08);border-bottom:1px solid rgba(110,120,140,.18)}.dk-preview-close{margin-left:auto}.dk-preview-img{display:block;max-width:100%;max-height:280px;margin:0 auto}.dk-preview-text{margin:0;padding:10px;font:12px/1.6 Consolas,Menlo,monospace;white-space:pre-wrap;word-break:break-all;max-height:260px;overflow:auto;background:rgba(0,0,0,.03)}")
     styles.insert(".dk-lightbox{position:fixed;inset:0;z-index:2147483100;background:rgba(0,0,0,.75);display:flex;align-items:center;justify-content:center;cursor:zoom-out}.dk-lightbox-img{max-width:92vw;max-height:88vh;border-radius:8px;box-shadow:0 12px 60px rgba(0,0,0,.6);cursor:default}.dk-commit-in{flex:1;min-width:200px}.dk-thumb{cursor:zoom-in}")
+    styles.insert(".dk-workbench{position:fixed;left:288px;top:8px;bottom:8px;width:min(440px,40vw);z-index:2147482900;display:flex;flex-direction:column;border-radius:14px;overflow:hidden;box-shadow:0 18px 60px rgba(0,0,0,.35);background:#ffffff;color:#1b1d22;font:13px/1.5 -apple-system,'Segoe UI',Roboto,'Microsoft YaHei',sans-serif;border:1px solid rgba(110,120,140,.28)}.dk-supervision{display:flex;flex-direction:column;flex:1;min-height:0}.dk-super-tabs{display:flex;align-items:center;gap:6px;padding:8px 10px;border-bottom:1px solid rgba(110,120,140,.2);flex-wrap:wrap}")
+    styles.insert(".dk-footbtn{display:inline-flex;align-items:center;gap:6px;background:transparent;border:none;color:inherit;cursor:pointer;font:inherit;padding:4px 8px;border-radius:8px}.dk-footbtn:hover{background:rgba(110,120,140,.14)}.dk-footbtn-on{background:rgba(79,140,255,.18);color:#4f8cff}.dk-footicon{font-size:14px}.dk-footlabel{font-size:12px}")
+    styles.insert("@media (prefers-color-scheme: dark){.dk-workbench{background:#1e2127;color:#e6e6e6;border-color:rgba(140,150,170,.3)}}")
+    styles.insert(".dk-skin-night .dk-workbench{background:#171a23;color:#dbe2ef;border-color:rgba(140,160,200,.25)}.dk-skin-ocean .dk-workbench{background:#f5fbff;color:#0f2e3d;border-color:rgba(14,165,233,.3)}.dk-skin-forest .dk-workbench{background:#f6fdf8;color:#12321f;border-color:rgba(22,163,74,.3)}.dk-skin-sunset .dk-workbench{background:#fff8f3;color:#3d1d0b;border-color:rgba(249,115,22,.3)}.dk-skin-graphite .dk-workbench{background:#22262e;color:#e2e8f0;border-color:rgba(148,163,184,.3)}")
   },
 }
