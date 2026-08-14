@@ -10,6 +10,10 @@ return {
     const shell = ctx.get('shell')
     const sandboxPolicy = ctx.get('sandboxPolicy')
     const sessionQuery = ctx.get('sessionQuery')
+    const llm = ctx.get('llm')
+    const settings = ctx.get('settings')
+    const credentials = ctx.get('credentials')
+    const attachments = ctx.get('attachments')
 
     const pick = (obj, keys) => {
       if (obj === null || obj === undefined) return undefined
@@ -39,6 +43,7 @@ return {
     const subIndexRel = mediaDirName + '/index.json'
     const legacyFileOf = (ref) => '.dsh-media-' + s(ref) + '.txt'
     const subFileOf = (ref) => mediaDirName + '/' + s(ref) + '.txt'
+    const psQuote = (v) => "'" + s(v).replace(/'/g, "''") + "'"
 
     async function ensureMediaDir() {
       if (mediaUseSubdir !== null) return
@@ -46,10 +51,9 @@ return {
         if (!shell || !fs || !workspaceRoot) { mediaUseSubdir = false; return }
         const rootTarget = await fs.resolve('.', { cwd: workspaceRoot })
         const rootPath = await fs.processPath(rootTarget)
-        const dirPath = rootPath.replace(/[\\/]+$/, '') + '\\' + mediaDirName
-        const psQuote = (v) => "'" + s(v).replace(/'/g, "''") + "'"
-        const script = 'New-Item -ItemType Directory -Force -Path ' + psQuote(dirPath) + ' | Out-Null'
-        const spec = shell.resolve({ command: 'pwsh', args: ['-NoProfile', '-NonInteractive', '-Command', script] })
+        const dirPath = (rootPath.replace(/[\\/]+$/, '') + '\\' + mediaDirName).replace(/\\/g, '/')
+        const command = 'New-Item -ItemType Directory -Force -Path ' + psQuote(dirPath) + ' | Out-Null'
+        const spec = shell.resolve({ command: command })
         const res = await shell.run(spec)
         mediaUseSubdir = n(pick(res, ['exitCode', 'code'])) === 0
       } catch (e) { mediaUseSubdir = false }
@@ -87,11 +91,20 @@ return {
       for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i)
       return u8
     }
+    // 注意：沙箱 btoa 按 UTF-8 编码字符串，不能用于二进制 base64；手写编码器保证字节安全
+    const B64_ALPHA = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
     function bytesToB64(u8) {
-      let bin = ''
-      const CH = 0x8000
-      for (let i = 0; i < u8.length; i += CH) bin += String.fromCharCode.apply(null, u8.subarray(i, i + CH))
-      return btoa(bin)
+      let out = ''
+      for (let i = 0; i < u8.length; i += 3) {
+        const b0 = u8[i]
+        const b1 = i + 1 < u8.length ? u8[i + 1] : 0
+        const b2 = i + 2 < u8.length ? u8[i + 2] : 0
+        out += B64_ALPHA[b0 >> 2]
+        out += B64_ALPHA[((b0 & 3) << 4) | (b1 >> 4)]
+        out += i + 1 < u8.length ? B64_ALPHA[((b1 & 15) << 2) | (b2 >> 6)] : '='
+        out += i + 2 < u8.length ? B64_ALPHA[b2 & 63] : '='
+      }
+      return out
     }
     function sniffMime(u8, name) {
       const png = u8.length > 8 && u8[0] === 0x89 && u8[1] === 0x50 && u8[2] === 0x4e && u8[3] === 0x47
@@ -114,15 +127,12 @@ return {
       try {
         if (!shell || !fs || !workspaceRoot) return null
         const rel = entry.file || legacyFileOf(entry.ref)
-        const b64Target = await fs.resolve(rel, { cwd: workspaceRoot })
-        const b64Path = await fs.processPath(b64Target)
+        const b64Path = await fs.processPath(await fs.resolve(rel, { cwd: workspaceRoot }))
         const realPath = b64Path.replace(/\.txt$/, '.' + entry.ext)
-        const psQuote = (v) => "'" + s(v).replace(/'/g, "''") + "'"
-        const script = '$ErrorActionPreference="Stop";$b=[IO.File]::ReadAllText(' + psQuote(b64Path) + ');[IO.File]::WriteAllBytes(' + psQuote(realPath) + ',[Convert]::FromBase64String($b))'
-        const spec = shell.resolve({ command: 'pwsh', args: ['-NoProfile', '-NonInteractive', '-Command', script] })
+        const command = '$ErrorActionPreference = "Stop"; $b = [IO.File]::ReadAllText(' + psQuote(b64Path) + '); [IO.File]::WriteAllBytes(' + psQuote(realPath) + ', [Convert]::FromBase64String($b))'
+        const spec = shell.resolve({ command: command })
         const res = await shell.run(spec)
-        const code = n(pick(res, ['exitCode', 'code']))
-        if (code === 0) return realPath
+        if (n(pick(res, ['exitCode', 'code'])) === 0) return realPath
       } catch (e) { /* 降级：仅保留 base64 文本 */ }
       return null
     }
@@ -403,6 +413,115 @@ return {
       } catch (e) { return { ok: false, error: errText(e) } }
     })
 
+    harness.handle('vision-routes', async () => {
+      try {
+        if (!llm) return { ok: false, error: 'LLM 服务不可用' }
+        const providers = llm.listProviders()
+        const out = []
+        for (const p of providers) {
+          const pid = s(pick(p, ['id']))
+          try {
+            const models = await llm.listModels(pid)
+            const vision = (models || []).filter((m) => {
+              const mods = m.inputModalities
+              return Array.isArray(mods) && mods.indexOf('image') >= 0
+            }).map((m) => ({ id: s(pick(m, ['id'])), name: s(pick(m, ['name', 'id'])) }))
+            if (vision.length > 0) out.push({ provider: pid, name: s(pick(p, ['name', 'id'])) || pid, models: vision })
+          } catch (e) {}
+        }
+        return { ok: true, routes: out }
+      } catch (e) { return { ok: false, error: errText(e) } }
+    })
+    async function mediaBytesFor(entry, ref) {
+      let bytes = null
+      if (entry.realPath) {
+        try { bytes = await fs.readBytes(await fs.resolve(entry.realPath), undefined, 12 * 1024 * 1024) } catch (e) { bytes = null }
+      }
+      if (!bytes || bytes.length === 0) {
+        try {
+          const rel = entry.file || legacyFileOf(ref)
+          bytes = b64ToBytes(await fs.readText(await fs.resolve(rel, { cwd: workspaceRoot })))
+        } catch (e) { bytes = null }
+      }
+      return bytes
+    }
+    harness.handle('vision-describe', async (args) => {
+      try {
+        if (!llm || !attachments || !fs) return { ok: false, error: '服务不可用' }
+        const ref = s(pick(args, ['ref']))
+        const provider = s(pick(args, ['provider']))
+        const model = s(pick(args, ['model']))
+        const prompt = s(pick(args, ['prompt'])).trim() || '请详细描述这张图片的内容。'
+        if (!ref || !provider || !model) return { ok: false, error: '参数不完整' }
+        await loadMediaIndex()
+        const entry = mediaIndex.find((m) => m.ref === ref)
+        if (!entry) return { ok: false, error: '未找到该媒体' }
+        const bytes = await mediaBytesFor(entry, ref)
+        if (!bytes || bytes.length === 0) return { ok: false, error: '读取图片数据失败' }
+        let attachmentRef
+        try {
+          attachmentRef = await attachments.saveImage({ data: bytes, mediaType: entry.mimeType, name: entry.name })
+        } catch (e) {
+          if (entry.realPath) return { ok: false, error: '图片附件保存失败: ' + errText(e) }
+          return { ok: false, error: '该图片没有已解码的真实文件，识图失败：请在图库中删除后重新上传' }
+        }
+        let text = ''
+        const chunks = llm.stream({ provider: provider, model: model, messages: [{ role: 'user', content: [{ type: 'image', attachment: attachmentRef }, { type: 'text', text: prompt }] }] })
+        for await (const chunk of chunks) {
+          if (chunk && chunk.type === 'text-delta' && typeof chunk.text === 'string') text += chunk.text
+        }
+        if (!text) return { ok: false, error: '模型未返回文本（可能 API Key 无效或该模型不支持视觉）' }
+        return { ok: true, text: text, provider: provider, model: model }
+      } catch (e) { return { ok: false, error: errText(e) } }
+    })
+    harness.handle('vision-add', async (args) => {
+      try {
+        if (!settings || !credentials) return { ok: false, error: '配置服务不可用' }
+        const route = s(pick(args, ['route'])).trim().toLowerCase().replace(/[^a-z0-9-]/g, '-')
+        if (!route) return { ok: false, error: '路由名不能为空' }
+        const baseURL = s(pick(args, ['baseURL'])).trim()
+        const modelId = s(pick(args, ['modelId'])).trim()
+        const apiKey = s(pick(args, ['apiKey'])).trim()
+        if (!baseURL || !modelId || !apiKey) return { ok: false, error: 'baseURL / 模型 id / API Key 均必填' }
+        const op = args && args.opTemplate ? args.opTemplate : null
+        const value = args && args.valueTemplate ? args.valueTemplate : null
+        if (!op || !value || !Array.isArray(value.models) || value.models.length < 1 || value.models[0] === null || typeof value.models[0] !== 'object') return { ok: false, error: '配置模板无效（客户端版本过旧，请刷新页面）' }
+        const envName = 'DSH_VISION_' + route.toUpperCase().replace(/-/g, '_')
+        const cw = Math.max(1, Number(pick(args, ['contextWindow'])) || 128000)
+        const mt = Math.max(1, Number(pick(args, ['maxTokens'])) || 8192)
+        op.op = 'set'
+        op.path = ['providers', route]
+        value.displayName = s(pick(args, ['displayName'])) || route
+        value.apiKeyEnv = envName
+        value.api = 'openai-completions'
+        value.baseURL = baseURL
+        if (!Array.isArray(value.defaultInput) || value.defaultInput.length === 0) value.defaultInput = ['text', 'image']
+        value.models[0].id = modelId
+        value.models[0].name = s(pick(args, ['modelName'])) || modelId
+        value.models[0].input = ['text', 'image']
+        value.models[0].contextWindow = cw
+        value.models[0].maxTokens = mt
+        op.value = value
+        await credentials.set(envName, apiKey)
+        await settings.mutate('llm-pi-ai', [op])
+        return { ok: true, route: route, envName: envName }
+      } catch (e) { return { ok: false, error: errText(e) } }
+    })
+    harness.handle('vision-remove', async (args) => {
+      try {
+        if (!settings || !credentials) return { ok: false, error: '配置服务不可用' }
+        const route = s(pick(args, ['route'])).trim()
+        if (!route) return { ok: false, error: '路由名不能为空' }
+        const op = args && args.opTemplate ? args.opTemplate : null
+        if (!op) return { ok: false, error: '配置模板无效（客户端版本过旧，请刷新页面）' }
+        op.op = 'unset'
+        op.path = ['providers', route]
+        try { await credentials.unset('DSH_VISION_' + route.toUpperCase().replace(/-/g, '_')) } catch (e) {}
+        await settings.mutate('llm-pi-ai', [op])
+        return { ok: true }
+      } catch (e) { return { ok: false, error: errText(e) } }
+    })
+
     const registerTool = (options) => harness.registerTool(ctx, harness.defineTool(options))
     registerTool({
       name: 'devkit_agents',
@@ -474,6 +593,59 @@ return {
         try {
           const entry = await saveMedia(s(pick(args, ['name'])), s(pick(args, ['base64'])))
           return { ok: true, ref: entry.ref, name: entry.name, size: entry.size, realPath: entry.realPath || null }
+        } catch (e) { return { ok: false, error: errText(e) } }
+      },
+    })
+    registerTool({
+      name: 'devkit_vision_describe',
+      description: '调用已配置的外部视觉大模型识别图库中的一张图片并返回描述（先在图库/管理视觉模型中配置好服务商 API Key）。',
+      parameters: {
+        ref: { type: 'string', required: true, description: '图库媒体引用 ref（可用 devkit_agents 或图库界面查看）' },
+        prompt: { type: 'string', description: '识别提示词，默认“请详细描述这张图片的内容。”' },
+        provider: { type: 'string', description: '视觉模型路由（省略时自动选择第一个可用视觉路由）' },
+        model: { type: 'string', description: '视觉模型 id（省略时自动选择该路由第一个模型）' },
+      },
+      output: {
+        schema: { type: 'json' },
+        render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
+      },
+      execute: async (args) => {
+        try {
+          if (!llm || !attachments || !fs) return { ok: false, error: '视觉服务不可用' }
+          const ref = s(pick(args, ['ref']))
+          const prompt = s(pick(args, ['prompt'])).trim() || '请详细描述这张图片的内容。'
+          await loadMediaIndex()
+          const entry = mediaIndex.find((m) => m.ref === ref)
+          if (!entry) return { ok: false, error: '未找到该媒体' }
+          let provider = s(pick(args, ['provider']))
+          let model = s(pick(args, ['model']))
+          if (!provider || !model) {
+            for (const p of llm.listProviders()) {
+              const pid = s(pick(p, ['id']))
+              try {
+                const models = await llm.listModels(pid)
+                const v = (models || []).find((m) => Array.isArray(m.inputModalities) && m.inputModalities.indexOf('image') >= 0)
+                if (v) { provider = pid; model = s(pick(v, ['id'])); break }
+              } catch (e) {}
+            }
+          }
+          if (!provider || !model) return { ok: false, error: '未找到可用的视觉模型路由，请先配置服务商 API Key' }
+          const bytes = await mediaBytesFor(entry, ref)
+          if (!bytes || bytes.length === 0) return { ok: false, error: '读取图片数据失败' }
+          let attachmentRef
+          try {
+            attachmentRef = await attachments.saveImage({ data: bytes, mediaType: entry.mimeType, name: entry.name })
+          } catch (e) {
+            if (entry.realPath) return { ok: false, error: '图片附件保存失败: ' + errText(e) }
+            return { ok: false, error: '该图片没有已解码的真实文件，识图失败：请在图库中删除后重新上传' }
+          }
+          let text = ''
+          const chunks = llm.stream({ provider: provider, model: model, messages: [{ role: 'user', content: [{ type: 'image', attachment: attachmentRef }, { type: 'text', text: prompt }] }] })
+          for await (const chunk of chunks) {
+            if (chunk && chunk.type === 'text-delta' && typeof chunk.text === 'string') text += chunk.text
+          }
+          if (!text) return { ok: false, error: '模型未返回文本（可能 API Key 无效或该模型不支持视觉）' }
+          return { ok: true, text: text, provider: provider, model: model }
         } catch (e) { return { ok: false, error: errText(e) } }
       },
     })
