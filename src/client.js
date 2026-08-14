@@ -8,7 +8,7 @@ return {
 
     const el = React.createElement
 
-    const store = { open: false, tab: 'agents', state: null, connected: false, lastError: '', pendingInsert: null, insertHint: '', pos: null, dragging: null }
+    const store = { open: false, tab: 'agents', state: null, connected: false, lastError: '', pendingInsert: null, pendingInsertRef: null, insertHint: '', pos: null, dragging: null }
     const listeners = new Set()
     const emit = () => { for (const fn of listeners) { try { fn() } catch (e) {} } }
     const patch = (p) => { Object.assign(store, p); emit() }
@@ -31,19 +31,15 @@ return {
       } catch (e) { patch({ lastError: String((e && e.message) || e) }) }
     }
 
-    const tryInsertText = (inputActions, text) => {
-      if (!inputActions) return false
-      const attempts = [
-        (a) => { if (typeof a.setText === 'function') { a.setText(text); return true } return false },
-        (a) => { if (typeof a.set === 'function') { a.set(text); return true } return false },
-        (a) => { if (typeof a.update === 'function') { a.update({ text: text }); return true } return false },
-        (a) => { if (typeof a.appendText === 'function') { a.appendText(text); return true } return false },
-        (a) => { if (typeof a.insert === 'function') { a.insert(text); return true } return false },
-      ]
-      for (const attempt of attempts) {
-        try { if (attempt(inputActions)) return true } catch (e) {}
-      }
-      return false
+    // 真实 API：InputActions.setDraft(text)（见 dsh-client-ui-conversation contract）
+    const tryInsertText = (inputActions, inputState, text) => {
+      if (!inputActions || typeof inputActions.setDraft !== 'function') return false
+      try {
+        const cur = inputState && typeof inputState.draft === 'string' ? inputState.draft : ''
+        const sep = cur && cur.charAt(cur.length - 1) !== '\n' ? '\n' : ''
+        inputActions.setDraft(cur + sep + text)
+        return true
+      } catch (e) { return false }
     }
 
     const refTextOf = (entry) => {
@@ -70,12 +66,14 @@ return {
       const [text, setText] = React.useState('')
       const [busy, setBusy] = React.useState(false)
       const [note, setNote] = React.useState('')
-      const canInterrupt = agent.status === 'running'
+      const canInterrupt = agent.status === 'running' && !agent.isRoot
+      const canMessage = !agent.isRoot
+      const label = agent.isRoot ? '★ 主会话' : (agent.label || '未命名')
       const send = async () => {
         if (!text.trim()) return
         setBusy(true); setNote('发送中…')
         try {
-          const res = await host.call('agent-message', { agentId: agent.id, text: text })
+          const res = await host.call('agent-message', { agentId: agent.id, text: text, parentId: agent.parentId || '' })
           setNote(res && res.ok ? '已送达 ✓' : '失败: ' + (res && res.error ? res.error : '未知'))
           if (res && res.ok) { setText(''); setOpenMsg(false) }
         } catch (e) { setNote('发送失败') }
@@ -89,9 +87,9 @@ return {
       }
       return el('div', { className: 'dk-agentrow' },
         StatusBadge(agent.status),
-        el('div', { className: 'dk-agentname', title: agent.id }, (agent.isRoot ? '★ ' : '') + agent.label, el('span', { className: 'dk-mono' }, ' ' + String(agent.id || '').slice(0, 12))),
+        el('div', { className: 'dk-agentname', title: agent.id }, label, el('span', { className: 'dk-mono' }, ' ' + String(agent.id || '').slice(0, 12))),
         el('div', { className: 'dk-agentactions' },
-          el('button', { className: 'dk-btn-sm dk-btn-primary', onClick: () => { setOpenMsg(!openMsg); setNote('') } }, openMsg ? '收起' : '发消息'),
+          canMessage ? el('button', { className: 'dk-btn-sm dk-btn-primary', onClick: () => { setOpenMsg(!openMsg); setNote('') } }, openMsg ? '收起' : '发消息') : null,
           canInterrupt ? el('button', { className: 'dk-btn-sm dk-btn-danger', onClick: stop }, '打断') : null,
         ),
         openMsg ? el('div', { className: 'dk-msgform' },
@@ -134,6 +132,7 @@ return {
     }
 
     function MediaTab(props) {
+      const s = useStore()
       const st = props.st || { media: [] }
       const media = st.media || []
       const [pathText, setPathText] = React.useState('')
@@ -176,7 +175,7 @@ return {
           await refresh()
         } catch (e) { patch({ insertHint: '导入失败' }) }
       }
-      const insert = (m) => { patch({ pendingInsert: refTextOf(m), insertHint: '' }) }
+      const insert = (m) => { patch({ pendingInsert: refTextOf(m), pendingInsertRef: m.ref, insertHint: '' }) }
       const remove = async (ref) => { try { await host.call('media-delete', { ref: ref }); mediaCache.delete(ref); await refresh() } catch (e) {} }
       return el('div', null,
         el('div', { className: 'dk-h3' }, '媒体图库（' + media.length + '）· 多模态素材'),
@@ -185,7 +184,7 @@ return {
           el('input', { className: 'dk-input dk-pathinput', placeholder: '或输入本机图片路径，如 C:\\...\\img.png', value: pathText, onChange: (ev) => setPathText(ev.target.value) }),
           el('button', { className: 'dk-btn', onClick: importPath, disabled: !pathText.trim() }, '导入'),
         ),
-        el('div', { className: 'dk-tip' }, '提示：点击卡片“插入消息”会把图片引用写入输入框，智能体会用 read_image 直接查看；图库也支持智能体用 devkit_media_save 工具交付图表。'),
+        el('div', { className: 'dk-tip' }, '提示：点击卡片“插入消息”会把图片引用写入输入框（自动附加到当前草稿后），智能体会用 read_image 直接查看；图库也支持智能体用 devkit_media_save 工具交付图表。'),
         media.length === 0 ? el('div', { className: 'dk-empty' }, '图库为空。选择文件上传、输入本机路径导入，或让智能体保存图表到图库。') :
           el('div', { className: 'dk-grid' }, media.map((m) => el('div', { className: 'dk-media-card', key: m.ref },
             mediaCache.get(m.ref) ? el('img', { className: 'dk-thumb', src: mediaCache.get(m.ref), alt: m.name }) : el('div', { className: 'dk-thumb dk-thumb-empty' }, '加载中…'),
@@ -195,6 +194,7 @@ return {
               el('button', { className: 'dk-btn-sm dk-btn-primary', onClick: () => insert(m) }, '插入消息'),
               el('button', { className: 'dk-btn-sm dk-btn-danger', onClick: () => remove(m.ref) }, '删除'),
             ),
+            s.pendingInsertRef === m.ref ? el('input', { className: 'dk-input dk-mono', readOnly: true, value: s.pendingInsert || '', onFocus: (ev) => ev.target.select() }) : null,
             m.realPath ? el('div', { className: 'dk-mono', title: m.realPath }, m.realPath) : null,
           ))),
       )
@@ -248,7 +248,7 @@ return {
           if (rect) patch({ dragging: { dx: ev.clientX - rect.left, dy: ev.clientY - rect.top } })
         } catch (e) {}
       }
-      const onMove = (ev) => { if (store.dragging) patch({ pos: { x: ev.clientX - store.dragging.dx - 12, y: ev.clientY - store.dragging.dy - 6 } }) }
+      const onMove = (ev) => { if (store.dragging) patch({ pos: { x: ev.clientX - store.dragging.dx, y: ev.clientY - store.dragging.dy } }) }
       const onUp = () => { if (store.dragging) patch({ dragging: null }) }
       const decoded = (st.media || []).filter((m) => m.realPath).length
       return el('div', { className: 'dk-console', style: style, onMouseMove: onMove, onMouseUp: onUp },
@@ -256,6 +256,8 @@ return {
           el('span', { className: 'dk-title' }, '🧭 开发控制台'),
           tabs.map((t) => el('button', { key: t[0], className: 'dk-tab' + (s.tab === t[0] ? ' dk-tab-active' : ''), onClick: () => patch({ tab: t[0] }) }, t[1])),
           el('div', { className: 'dk-spacer' }),
+          el('button', { className: 'dk-btn-sm', onClick: refresh, title: '立即刷新状态' }, '刷新'),
+          s.pos ? el('button', { className: 'dk-btn-sm', onClick: () => patch({ pos: null }), title: '复位面板位置' }, '复位') : null,
           el('button', { className: 'dk-close', onClick: () => patch({ open: false }), title: '关闭' }, '✕'),
         ),
         el('div', { className: 'dk-body' },
@@ -284,16 +286,23 @@ return {
       const running = (st.agents || []).filter((a) => a.status === 'running').length
       const total = (st.agents || []).length
       React.useEffect(() => {
-        if (s.pendingInsert && props && props.inputActions) {
-          const ok = tryInsertText(props.inputActions, s.pendingInsert)
-          patch({ pendingInsert: null, insertHint: ok ? '图片引用已插入输入框 ✓' : '未能自动插入，请到控制台复制文本' })
-          if (ok) ctx.timeout(() => patch({ insertHint: '' }), 6000)
+        if (s.pendingInsert) {
+          if (props && props.inputActions) {
+            const ok = tryInsertText(props.inputActions, props.input, s.pendingInsert)
+            patch({ insertHint: ok ? '图片引用已插入输入框 ✓' : '未能自动插入，请复制文本框内容' })
+            if (ok) { patch({ pendingInsert: null, pendingInsertRef: null }); ctx.timeout(() => patch({ insertHint: '' }), 6000) }
+          } else {
+            patch({ insertHint: '当前页面无输入框，请手动复制文本框内容' })
+          }
         }
       }, [s.pendingInsert])
       return el('div', { className: 'dk-dock' },
         el('span', { className: 'dk-dockstats' }, '🧭 智能体 ' + total + ' · 运行 ' + running + ' · 任务 ' + (st.jobs ? st.jobs.length : 0) + ' · 图库 ' + (st.media ? st.media.length : 0)),
         el('button', { className: 'dk-btn-sm', onClick: () => patch({ open: true, tab: 'agents' }) }, '控制台'),
         el('button', { className: 'dk-btn-sm', onClick: () => patch({ open: true, tab: 'media' }) }, '图库'),
+        el('button', { className: 'dk-btn-sm', onClick: refresh, title: '立即刷新状态' }, '刷新'),
+        s.pendingInsert ? el('input', { className: 'dk-input dk-mono dk-dock-copy', readOnly: true, value: s.pendingInsert, onFocus: (ev) => ev.target.select() }) : null,
+        s.pendingInsert ? el('button', { className: 'dk-btn-sm', onClick: () => patch({ pendingInsert: null, pendingInsertRef: null }) }, '✕') : null,
         s.insertHint ? el('span', { className: 'dk-note' }, s.insertHint) : null,
       )
     }
@@ -328,6 +337,6 @@ return {
     slots.inject('sidebar.footer.action', () => slots.register({ name: 'sidebar.footer.action', id: 'devkit-console-toggle', order: 10, label: '控制台' }, (props) => el(FooterButton, props)))
     slots.inject('tool.view.cordis', () => slots.register({ name: 'tool.view.cordis', key: 'self' }, () => el(SelfCard, null)))
 
-    styles.insert(".dk-console{position:fixed;z-index:2147483000;width:min(680px,calc(100vw - 40px));height:min(540px,calc(100vh - 110px));display:flex;flex-direction:column;border-radius:12px;overflow:hidden;box-shadow:0 14px 48px rgba(0,0,0,.38);background:#ffffff;color:#1b1d22;font:13px/1.5 -apple-system,'Segoe UI',Roboto,'Microsoft YaHei',sans-serif;pointer-events:auto;border:1px solid rgba(110,120,140,.28)}.dk-head{display:flex;align-items:center;gap:6px;padding:8px 12px;background:rgba(79,140,255,.08);border-bottom:1px solid rgba(110,120,140,.2);cursor:move;user-select:none;flex-wrap:wrap}.dk-title{font-weight:700;margin-right:4px}.dk-tab{border:none;background:transparent;color:inherit;padding:6px 10px;cursor:pointer;font:inherit;border-radius:6px}.dk-tab:hover{background:rgba(110,120,140,.12)}.dk-tab-active{background:rgba(79,140,255,.18);color:#4f8cff;font-weight:600}.dk-spacer{flex:1}.dk-close{border:none;background:transparent;color:inherit;cursor:pointer;font:inherit;padding:4px 8px;border-radius:6px}.dk-close:hover{background:rgba(239,68,68,.15)}.dk-body{flex:1;overflow:auto;padding:10px 12px}.dk-foot{padding:6px 12px;font-size:11px;color:#8a8f98;border-top:1px solid rgba(110,120,140,.2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.dk-h3{font-size:12px;font-weight:700;margin:10px 0 6px}.dk-empty{color:#9aa0aa;padding:14px 4px;font-size:12px}.dk-agentrow{display:flex;align-items:center;gap:8px;padding:7px 4px;border-top:1px solid rgba(110,120,140,.15);flex-wrap:wrap}.dk-agentname{flex:1;min-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dk-agentactions{display:flex;gap:6px;align-items:center}.dk-status{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:#6b7280;min-width:96px}.dk-dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex:none}.dk-dot-running{background:#22c55e}.dk-dot-idle{background:#3b82f6}.dk-dot-ready{background:#9ca3af}.dk-dot-ended{background:#6b7280;opacity:.5}.dk-dot-unknown{background:#f59e0b}.dk-btn{background:rgba(110,120,140,.14);border:1px solid rgba(110,120,140,.3);color:inherit;border-radius:7px;padding:5px 12px;cursor:pointer;font:inherit}.dk-btn:hover{background:rgba(110,120,140,.24)}.dk-btn:disabled{opacity:.45;cursor:default}.dk-btn-primary{background:#4f8cff;border-color:#4f8cff;color:#fff}.dk-btn-primary:hover{background:#3d7bf0}.dk-btn-sm{background:rgba(110,120,140,.12);border:1px solid rgba(110,120,140,.25);color:inherit;border-radius:6px;padding:3px 9px;cursor:pointer;font:inherit;font-size:12px}.dk-btn-sm:hover{background:rgba(110,120,140,.22)}.dk-btn-danger{color:#ef4444;border-color:rgba(239,68,68,.4)}.dk-btn-danger:hover{background:rgba(239,68,68,.12)}.dk-input{background:rgba(110,120,140,.07);border:1px solid rgba(110,120,140,.3);border-radius:6px;padding:5px 8px;color:inherit;font:inherit;width:100%;box-sizing:border-box}.dk-textarea{resize:vertical;min-height:44px}.dk-msgform{flex-basis:100%;display:flex;flex-direction:column;gap:6px;padding:4px 0 2px}.dk-msgrow{display:flex;gap:8px;align-items:center}.dk-note{color:#f59e0b;font-size:11px}.dk-uploadrow{display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap}.dk-file{width:auto;flex:none}.dk-pathinput{flex:1;min-width:220px}.dk-tip{color:#9aa0aa;font-size:11px;margin:6px 0}.dk-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}.dk-media-card{border:1px solid rgba(110,120,140,.25);border-radius:10px;padding:8px;display:flex;flex-direction:column;gap:5px}.dk-thumb{width:100%;height:96px;object-fit:cover;border-radius:6px;background:rgba(110,120,140,.1)}.dk-thumb-empty{display:flex;align-items:center;justify-content:center;color:#9aa0aa;font-size:11px}.dk-media-name{font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dk-media-meta{font-size:11px;color:#9aa0aa}.dk-media-actions{display:flex;gap:6px}.dk-log{font-size:11px;color:#7c8290;white-space:pre-wrap;word-break:break-all;margin:2px 0;border-left:2px solid rgba(110,120,140,.25);padding-left:6px}.dk-log-err{border-left-color:#ef4444;color:#b45309}.dk-mono{font-family:ui-monospace,Consolas,monospace;font-size:11px;word-break:break-all;color:#7c8290}.dk-goal{border:1px solid rgba(79,140,255,.35);background:rgba(79,140,255,.07);border-radius:10px;padding:10px 12px}.dk-goal-obj{font-weight:600;margin-bottom:4px}.dk-goal-meta{font-size:12px;color:#6b7280}.dk-goal-block{font-size:12px;color:#ef4444;margin-top:4px}.dk-dock{display:flex;gap:8px;align-items:center;padding:4px 8px;border-radius:8px;background:rgba(110,120,140,.06);border:1px solid rgba(110,120,140,.15);flex-wrap:wrap;font-size:12px}.dk-dockstats{color:#6b7280}.dk-footbtn{display:inline-flex;align-items:center;gap:6px;background:transparent;border:none;color:inherit;cursor:pointer;font:inherit;padding:4px 8px;border-radius:8px}.dk-footbtn:hover{background:rgba(110,120,140,.14)}.dk-footicon{font-size:14px}.dk-footlabel{font-size:12px}.dk-badge{background:#ef4444;color:#fff;border-radius:9px;padding:0 7px;font-size:11px;line-height:16px}.dk-self{border:1px solid rgba(79,140,255,.35);background:rgba(79,140,255,.07);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:6px}.dk-self-title{font-weight:700}.dk-self-line{font-size:12px;color:#6b7280}.dk-self-row{display:flex;gap:8px;margin-top:2px}@media (prefers-color-scheme: dark){.dk-console{background:#1e2127;color:#e6e6e6;border-color:rgba(140,150,170,.3)}.dk-foot,.dk-empty,.dk-tip,.dk-media-meta,.dk-self-line,.dk-goal-meta,.dk-log,.dk-dockstats,.dk-status{color:#8b93a1}.dk-note{color:#fbbf24}}")
+    styles.insert(".dk-console{position:fixed;z-index:2147483000;width:min(680px,calc(100vw - 40px));height:min(540px,calc(100vh - 110px));display:flex;flex-direction:column;border-radius:12px;overflow:hidden;box-shadow:0 14px 48px rgba(0,0,0,.38);background:#ffffff;color:#1b1d22;font:13px/1.5 -apple-system,'Segoe UI',Roboto,'Microsoft YaHei',sans-serif;pointer-events:auto;border:1px solid rgba(110,120,140,.28)}.dk-head{display:flex;align-items:center;gap:6px;padding:8px 12px;background:rgba(79,140,255,.08);border-bottom:1px solid rgba(110,120,140,.2);cursor:move;user-select:none;flex-wrap:wrap}.dk-title{font-weight:700;margin-right:4px}.dk-tab{border:none;background:transparent;color:inherit;padding:6px 10px;cursor:pointer;font:inherit;border-radius:6px}.dk-tab:hover{background:rgba(110,120,140,.12)}.dk-tab-active{background:rgba(79,140,255,.18);color:#4f8cff;font-weight:600}.dk-spacer{flex:1}.dk-close{border:none;background:transparent;color:inherit;cursor:pointer;font:inherit;padding:4px 8px;border-radius:6px}.dk-close:hover{background:rgba(239,68,68,.15)}.dk-body{flex:1;overflow:auto;padding:10px 12px}.dk-foot{padding:6px 12px;font-size:11px;color:#8a8f98;border-top:1px solid rgba(110,120,140,.2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.dk-h3{font-size:12px;font-weight:700;margin:10px 0 6px}.dk-empty{color:#9aa0aa;padding:14px 4px;font-size:12px}.dk-agentrow{display:flex;align-items:center;gap:8px;padding:7px 4px;border-top:1px solid rgba(110,120,140,.15);flex-wrap:wrap}.dk-agentname{flex:1;min-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dk-agentactions{display:flex;gap:6px;align-items:center}.dk-status{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:#6b7280;min-width:96px}.dk-dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex:none}.dk-dot-running{background:#22c55e}.dk-dot-idle{background:#3b82f6}.dk-dot-ready{background:#9ca3af}.dk-dot-ended{background:#6b7280;opacity:.5}.dk-dot-unknown{background:#f59e0b}.dk-btn{background:rgba(110,120,140,.14);border:1px solid rgba(110,120,140,.3);color:inherit;border-radius:7px;padding:5px 12px;cursor:pointer;font:inherit}.dk-btn:hover{background:rgba(110,120,140,.24)}.dk-btn:disabled{opacity:.45;cursor:default}.dk-btn-primary{background:#4f8cff;border-color:#4f8cff;color:#fff}.dk-btn-primary:hover{background:#3d7bf0}.dk-btn-sm{background:rgba(110,120,140,.12);border:1px solid rgba(110,120,140,.25);color:inherit;border-radius:6px;padding:3px 9px;cursor:pointer;font:inherit;font-size:12px}.dk-btn-sm:hover{background:rgba(110,120,140,.22)}.dk-btn-danger{color:#ef4444;border-color:rgba(239,68,68,.4)}.dk-btn-danger:hover{background:rgba(239,68,68,.12)}.dk-input{background:rgba(110,120,140,.07);border:1px solid rgba(110,120,140,.3);border-radius:6px;padding:5px 8px;color:inherit;font:inherit;width:100%;box-sizing:border-box}.dk-textarea{resize:vertical;min-height:44px}.dk-msgform{flex-basis:100%;display:flex;flex-direction:column;gap:6px;padding:4px 0 2px}.dk-msgrow{display:flex;gap:8px;align-items:center}.dk-note{color:#f59e0b;font-size:11px}.dk-uploadrow{display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap}.dk-file{width:auto;flex:none}.dk-pathinput{flex:1;min-width:220px}.dk-tip{color:#9aa0aa;font-size:11px;margin:6px 0}.dk-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}.dk-media-card{border:1px solid rgba(110,120,140,.25);border-radius:10px;padding:8px;display:flex;flex-direction:column;gap:5px}.dk-thumb{width:100%;height:96px;object-fit:cover;border-radius:6px;background:rgba(110,120,140,.1)}.dk-thumb-empty{display:flex;align-items:center;justify-content:center;color:#9aa0aa;font-size:11px}.dk-media-name{font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dk-media-meta{font-size:11px;color:#9aa0aa}.dk-media-actions{display:flex;gap:6px}.dk-log{font-size:11px;color:#7c8290;white-space:pre-wrap;word-break:break-all;margin:2px 0;border-left:2px solid rgba(110,120,140,.25);padding-left:6px}.dk-log-err{border-left-color:#ef4444;color:#b45309}.dk-mono{font-family:ui-monospace,Consolas,monospace;font-size:11px;word-break:break-all;color:#7c8290}.dk-goal{border:1px solid rgba(79,140,255,.35);background:rgba(79,140,255,.07);border-radius:10px;padding:10px 12px}.dk-goal-obj{font-weight:600;margin-bottom:4px}.dk-goal-meta{font-size:12px;color:#6b7280}.dk-goal-block{font-size:12px;color:#ef4444;margin-top:4px}.dk-dock{display:flex;gap:8px;align-items:center;padding:4px 8px;border-radius:8px;background:rgba(110,120,140,.06);border:1px solid rgba(110,120,140,.15);flex-wrap:wrap;font-size:12px}.dk-dockstats{color:#6b7280}.dk-dock-copy{flex:1;min-width:200px}.dk-footbtn{display:inline-flex;align-items:center;gap:6px;background:transparent;border:none;color:inherit;cursor:pointer;font:inherit;padding:4px 8px;border-radius:8px}.dk-footbtn:hover{background:rgba(110,120,140,.14)}.dk-footicon{font-size:14px}.dk-footlabel{font-size:12px}.dk-badge{background:#ef4444;color:#fff;border-radius:9px;padding:0 7px;font-size:11px;line-height:16px}.dk-self{border:1px solid rgba(79,140,255,.35);background:rgba(79,140,255,.07);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:6px}.dk-self-title{font-weight:700}.dk-self-line{font-size:12px;color:#6b7280}.dk-self-row{display:flex;gap:8px;margin-top:2px}@media (prefers-color-scheme: dark){.dk-console{background:#1e2127;color:#e6e6e6;border-color:rgba(140,150,170,.3)}.dk-foot,.dk-empty,.dk-tip,.dk-media-meta,.dk-self-line,.dk-goal-meta,.dk-log,.dk-dockstats,.dk-status{color:#8b93a1}.dk-note{color:#fbbf24}}")
   },
 }

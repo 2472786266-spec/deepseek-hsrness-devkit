@@ -9,6 +9,7 @@ return {
     const goals = ctx.get('goals')
     const shell = ctx.get('shell')
     const sandboxPolicy = ctx.get('sandboxPolicy')
+    const sessionQuery = ctx.get('sessionQuery')
 
     const pick = (obj, keys) => {
       if (obj === null || obj === undefined) return undefined
@@ -19,7 +20,6 @@ return {
     const n = (v) => { if (v === undefined || v === null) return null; const x = Number(v); return Number.isFinite(x) ? x : null }
     const now = () => Date.now()
     const errText = (e) => { if (!e) return '未知错误'; return s(pick(e, ['message'])) || String(e) }
-    const shortId = (id) => { const x = s(id); return x.length > 12 ? x.slice(0, 10) + '…' : x }
     const fmt = (t) => { try { const d = new Date(t); const p = (x) => (x < 10 ? '0' + x : '' + x); return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds()) } catch (e) { return '' } }
     const sizeText = (b) => { const x = Number(b) || 0; if (x >= 1048576) return (x / 1048576).toFixed(2) + ' MB'; if (x >= 1024) return Math.round(x / 1024) + ' KB'; return x + ' B' }
 
@@ -28,29 +28,56 @@ return {
     const workflowMap = new Map()
     const logBuf = []
     const errBuf = []
+    const titleCache = new Map()
     let goalCache = null
     let mediaIndex = []
     let mediaLoaded = false
+    let mediaUseSubdir = null
 
-    const mediaFileOf = (ref) => '.dsh-media-' + s(ref) + '.txt'
+    const mediaDirName = '.dsh-media'
+    const legacyIndexRel = '.dsh-media-index.json'
+    const subIndexRel = mediaDirName + '/index.json'
+    const legacyFileOf = (ref) => '.dsh-media-' + s(ref) + '.txt'
+    const subFileOf = (ref) => mediaDirName + '/' + s(ref) + '.txt'
+
+    async function ensureMediaDir() {
+      if (mediaUseSubdir !== null) return
+      try {
+        if (!shell || !fs || !workspaceRoot) { mediaUseSubdir = false; return }
+        const rootTarget = await fs.resolve('.', { cwd: workspaceRoot })
+        const rootPath = await fs.processPath(rootTarget)
+        const dirPath = rootPath.replace(/[\\/]+$/, '') + '\\' + mediaDirName
+        const psQuote = (v) => "'" + s(v).replace(/'/g, "''") + "'"
+        const script = 'New-Item -ItemType Directory -Force -Path ' + psQuote(dirPath) + ' | Out-Null'
+        const spec = shell.resolve({ command: 'pwsh', args: ['-NoProfile', '-NonInteractive', '-Command', script] })
+        const res = await shell.run(spec)
+        mediaUseSubdir = n(pick(res, ['exitCode', 'code'])) === 0
+      } catch (e) { mediaUseSubdir = false }
+    }
 
     async function loadMediaIndex() {
       if (mediaLoaded) return mediaIndex
       mediaLoaded = true
-      try {
-        if (!fs || !workspaceRoot) return mediaIndex
-        const target = await fs.resolve('.dsh-media-index.json', { cwd: workspaceRoot })
-        const text = await fs.readText(target)
-        const parsed = JSON.parse(text)
-        if (Array.isArray(parsed)) mediaIndex = parsed.map((m) => ({ ref: s(m && m.ref), name: s(m && m.name), mimeType: s(m && m.mimeType), ext: s(m && m.ext), size: n(m && m.size), createdAt: n(m && m.createdAt), realPath: m && m.realPath ? s(m.realPath) : null }))
-      } catch (e) { mediaIndex = [] }
+      if (!fs || !workspaceRoot) return mediaIndex
+      const readAt = async (rel) => {
+        try { return await fs.readText(await fs.resolve(rel, { cwd: workspaceRoot })) } catch (e) { return '' }
+      }
+      let text = await readAt(subIndexRel)
+      if (!text) text = await readAt(legacyIndexRel)
+      if (text) {
+        try {
+          const parsed = JSON.parse(text)
+          if (Array.isArray(parsed)) mediaIndex = parsed.map((m) => ({ ref: s(m && m.ref), name: s(m && m.name), mimeType: s(m && m.mimeType), ext: s(m && m.ext), size: n(m && m.size), createdAt: n(m && m.createdAt), realPath: m && m.realPath ? s(m.realPath) : null, file: s(m && m.file) }))
+        } catch (e) { mediaIndex = [] }
+      }
       return mediaIndex
     }
     async function persistMediaIndex() {
       try {
         if (!fs || !workspaceRoot) return
-        const target = await fs.resolve('.dsh-media-index.json', { cwd: workspaceRoot })
-        await fs.writeText(target, JSON.stringify(mediaIndex))
+        await ensureMediaDir()
+        const rel = mediaUseSubdir ? subIndexRel : legacyIndexRel
+        await fs.writeText(await fs.resolve(rel, { cwd: workspaceRoot }), JSON.stringify(mediaIndex))
       } catch (e) { console.error('devkit: 媒体索引写入失败', e) }
     }
 
@@ -82,14 +109,15 @@ return {
       if (low.endsWith('.webp')) return { mimeType: 'image/webp', ext: 'webp' }
       return null
     }
-    const psQuote = (v) => "'" + s(v).replace(/'/g, "''") + "'"
 
     async function tryDecodeReal(entry) {
       try {
         if (!shell || !fs || !workspaceRoot) return null
-        const b64Target = await fs.resolve(mediaFileOf(entry.ref), { cwd: workspaceRoot })
+        const rel = entry.file || legacyFileOf(entry.ref)
+        const b64Target = await fs.resolve(rel, { cwd: workspaceRoot })
         const b64Path = await fs.processPath(b64Target)
         const realPath = b64Path.replace(/\.txt$/, '.' + entry.ext)
+        const psQuote = (v) => "'" + s(v).replace(/'/g, "''") + "'"
         const script = '$ErrorActionPreference="Stop";$b=[IO.File]::ReadAllText(' + psQuote(b64Path) + ');[IO.File]::WriteAllBytes(' + psQuote(realPath) + ',[Convert]::FromBase64String($b))'
         const spec = shell.resolve({ command: 'pwsh', args: ['-NoProfile', '-NonInteractive', '-Command', script] })
         const res = await shell.run(spec)
@@ -109,9 +137,14 @@ return {
       const sniff = sniffMime(u8, s(name))
       if (!sniff) throw new Error('不支持的图片格式（仅支持 PNG/JPEG/GIF/WebP）')
       const ref = 'm' + now().toString(36) + Math.random().toString(36).slice(2, 8)
-      const entry = { ref: ref, name: s(name) || ('图片-' + ref), mimeType: sniff.mimeType, ext: sniff.ext, size: u8.length, createdAt: now(), realPath: null }
-      const target = await fs.resolve(mediaFileOf(ref), { cwd: workspaceRoot })
-      await fs.writeText(target, base64)
+      await ensureMediaDir()
+      let rel = legacyFileOf(ref)
+      if (mediaUseSubdir) {
+        rel = subFileOf(ref)
+        try { await fs.writeText(await fs.resolve(rel, { cwd: workspaceRoot }), base64) } catch (e) { rel = legacyFileOf(ref); mediaUseSubdir = false }
+      }
+      if (!mediaUseSubdir) await fs.writeText(await fs.resolve(rel, { cwd: workspaceRoot }), base64)
+      const entry = { ref: ref, name: s(name) || ('图片-' + ref), mimeType: sniff.mimeType, ext: sniff.ext, size: u8.length, createdAt: now(), realPath: null, file: rel }
       entry.realPath = await tryDecodeReal(entry)
       await loadMediaIndex()
       mediaIndex.unshift(entry)
@@ -195,23 +228,32 @@ return {
       goalCache = { objective: s(pick(g, ['objective'])), phase: s(pick(g, ['phase'])), rounds: n(pick(g, ['roundsStarted', 'rounds'])), maxRounds: n(pick(g, ['maxGoalRounds'])), blockedReason: s(pick(g, ['blockedReason'])), updatedAt: now() }
     })
 
+    async function titleFor(id) {
+      if (titleCache.has(id)) return titleCache.get(id)
+      let title = ''
+      try {
+        if (sessionQuery && typeof sessionQuery.readTitle === 'function') {
+          const snap = await sessionQuery.readTitle(id)
+          title = s(pick(snap, ['title', 'name', 'text', 'label']))
+        }
+      } catch (e) {}
+      if (titleCache.size > 300) titleCache.clear()
+      titleCache.set(id, title)
+      return title
+    }
+
     async function buildState() {
       const out = []
       const seen = new Set()
       let rootId = ''
+      const liveMap = new Map()
       if (agents) {
         try {
           const roots = agents.roots()
           rootId = roots && roots[0] ? s(pick(roots[0], ['id', 'sessionId'])) : ''
         } catch (e) {}
         try {
-          for (const a of agents.list()) {
-            const id = agentIdOf(a)
-            if (!id || seen.has(id)) continue
-            seen.add(id)
-            const m = agentMeta.get(id) || {}
-            out.push({ id: id, label: s(pick(a, ['label', 'name', 'title'])) || s(m.label) || shortId(id), status: s(m.status) || 'unknown', isRoot: id === rootId, depth: 0, createdAt: n(m.createdAt) })
-          }
+          for (const a of agents.list()) { const id = agentIdOf(a); if (id) liveMap.set(id, a) }
         } catch (e) {}
       }
       if (subagents && rootId) {
@@ -222,9 +264,24 @@ return {
             if (!id || seen.has(id)) continue
             seen.add(id)
             const m = agentMeta.get(id) || {}
-            out.push({ id: id, label: s(pick(d, ['label', 'name'])) || s(m.label) || shortId(id), status: s(m.status) || 'ready', isRoot: false, depth: n(pick(d, ['depth'])) || 1, createdAt: n(m.createdAt) || n(pick(d, ['createdAt'])) })
+            const live = liveMap.has(id)
+            out.push({ id: id, label: s(pick(d, ['label', 'name'])) || s(m.label) || '', parentId: s(pick(d, ['parentId', 'parent'])), depth: n(pick(d, ['depth'])) || 1, isRoot: false, live: live, status: live ? (s(m.status) || 'unknown') : 'ready', createdAt: n(m.createdAt) || n(pick(d, ['createdAt'])) })
           }
         } catch (e) {}
+      }
+      for (const entry of liveMap) {
+        const id = entry[0]
+        if (seen.has(id)) continue
+        seen.add(id)
+        const m = agentMeta.get(id) || {}
+        const isRoot = id === rootId
+        out.push({ id: id, label: s(pick(entry[1], ['label', 'name', 'title'])) || s(m.label) || '', parentId: '', depth: 0, isRoot: isRoot, live: true, status: s(m.status) || 'unknown', createdAt: n(m.createdAt) })
+      }
+      for (const row of out) {
+        if (!row.label) {
+          const t = await titleFor(row.id)
+          if (t) row.label = t
+        }
       }
       let jobList = []
       if (jobs) {
@@ -286,7 +343,8 @@ return {
         await loadMediaIndex()
         const entry = mediaIndex.find((m) => m.ref === ref)
         if (!entry) return { ok: false, error: '未找到该媒体' }
-        const target = await fs.resolve(mediaFileOf(ref), { cwd: workspaceRoot })
+        const rel = entry.file || legacyFileOf(ref)
+        const target = await fs.resolve(rel, { cwd: workspaceRoot })
         const base64 = await fs.readText(target)
         return { ok: true, entry: { ref: entry.ref, name: entry.name, mimeType: entry.mimeType, ext: entry.ext, size: entry.size, createdAt: entry.createdAt, realPath: entry.realPath ? s(entry.realPath) : null }, base64: base64 }
       } catch (e) { return { ok: false, error: errText(e) } }
@@ -304,11 +362,21 @@ return {
     harness.handle('agent-message', async (args) => {
       try {
         if (!agents || !subagents) return { ok: false, error: '智能体服务不可用' }
-        const parent = (args && agents.get(s(pick(args, ['sessionId'])))) || agents.roots()[0]
-        if (!parent) return { ok: false, error: '未找到当前会话代理' }
-        const text = s(pick(args, ['text'])).trim()
         const agentId = s(pick(args, ['agentId']))
+        const text = s(pick(args, ['text'])).trim()
         if (!text || !agentId) return { ok: false, error: '消息或目标为空' }
+        const root = agents.roots()[0]
+        if (!root) return { ok: false, error: '未找到主会话代理' }
+        const rootId = s(pick(root, ['id', 'sessionId']))
+        if (agentId === rootId) return { ok: false, error: '不能给主会话自己发消息' }
+        const parentId = s(pick(args, ['parentId']))
+        let parent = undefined
+        if (parentId) {
+          parent = agents.get(parentId)
+          if (!parent) return { ok: false, error: '该智能体的直接父级当前离线，无法投递（待其唤醒后重试）' }
+        } else {
+          parent = root
+        }
         const messageId = await subagents.followup(parent, agentId, [{ type: 'text', text: text }], {})
         return { ok: true, messageId: s(messageId) }
       } catch (e) { return { ok: false, error: errText(e) } }
@@ -316,10 +384,12 @@ return {
     harness.handle('agent-interrupt', async (args) => {
       try {
         if (!agents || !subagents) return { ok: false, error: '智能体服务不可用' }
-        const authority = (args && agents.get(s(pick(args, ['sessionId'])))) || agents.roots()[0]
+        const authority = agents.roots()[0]
         if (!authority) return { ok: false, error: '未找到授权代理' }
         const agentId = s(pick(args, ['agentId']))
         if (!agentId) return { ok: false, error: '目标为空' }
+        const rootId = s(pick(authority, ['id', 'sessionId']))
+        if (agentId === rootId) return { ok: false, error: '不能打断主会话' }
         subagents.interrupt(agentId, authority)
         return { ok: true }
       } catch (e) { return { ok: false, error: errText(e) } }
@@ -336,7 +406,7 @@ return {
     const registerTool = (options) => harness.registerTool(ctx, harness.defineTool(options))
     registerTool({
       name: 'devkit_agents',
-      description: '查看开发控制台的多智能体监督快照：主会话与所有子智能体（状态/标签）、后台任务、当前目标与工作流。用于监督多智能体工作进展。',
+      description: '查看开发控制台的多智能体监督快照：主会话与所有子智能体（状态/标签/深度/父级）、后台任务、当前目标与工作流。用于监督多智能体工作进展。',
       parameters: {},
       output: {
         schema: { type: 'json' },
@@ -353,6 +423,7 @@ return {
       parameters: {
         agentId: { type: 'string', required: true, description: '子智能体的 id（可用 devkit_agents 查询）' },
         text: { type: 'string', required: true, description: '要发送的消息内容' },
+        parentId: { type: 'string', description: '其直接父级智能体的 id（深层子智能体必填，devkit_agents 中可查 parentId）' },
       },
       output: {
         schema: { type: 'json' },
@@ -361,7 +432,7 @@ return {
       execute: async (args) => {
         try {
           if (!agents || !subagents) return { ok: false, error: '智能体服务不可用' }
-          const parent = agents.roots()[0]
+          const parent = agents.get(s(pick(args, ['parentId']))) || agents.roots()[0]
           if (!parent) return { ok: false, error: '未找到主会话代理' }
           const messageId = await subagents.followup(parent, s(pick(args, ['agentId'])), [{ type: 'text', text: s(pick(args, ['text'])) }], {})
           return { ok: true, messageId: s(messageId) }
