@@ -349,7 +349,7 @@ return {
             seen.add(id)
             const m = agentMeta.get(id) || {}
             const live = liveMap.has(id)
-            out.push({ id: id, label: s(pick(d, ['label', 'name'])) || s(m.label) || '', parentId: s(pick(d, ['parentId', 'parent'])), depth: n(pick(d, ['depth'])) || 1, isRoot: false, live: live, status: live ? (s(m.status) || 'unknown') : 'ready', createdAt: n(m.createdAt) || n(pick(d, ['createdAt', 'created', 'startedAt', 'started'])) || null })
+            out.push({ id: id, label: s(pick(d, ['label', 'name'])) || s(m.label) || '', parentId: s(pick(d, ['parentId', 'parent'])), depth: n(pick(d, ['depth'])) || 1, mode: s(pick(d, ['mode'])), activity: s(pick(d, ['activity'])), hasChildren: !!pick(d, ['hasChildren']), isRoot: false, live: live, status: live ? (s(m.status) || 'unknown') : 'ready', createdAt: n(m.createdAt) || n(pick(d, ['createdAt', 'created', 'startedAt', 'started'])) || null })
           }
         } catch (e) {}
       }
@@ -472,7 +472,9 @@ return {
         } else {
           parent = root
         }
-        const messageId = await subagents.followup(parent, agentId, [{ type: 'text', text: text }], {})
+        // followup 的 options 是必填：{ source, signal }（缺省会被拒绝）
+        const followupOptions = { source: { kind: 'user' }, signal: (typeof AbortController !== 'undefined' ? new AbortController().signal : undefined) }
+        const messageId = await subagents.followup(parent, agentId, [{ type: 'text', text: text }], followupOptions)
         return { ok: true, messageId: s(messageId) }
       } catch (e) { return { ok: false, error: errText(e) } }
     })
@@ -485,7 +487,8 @@ return {
         if (!agentId) return { ok: false, error: '目标为空' }
         const rootId = s(pick(authority, ['id', 'sessionId']))
         if (agentId === rootId) return { ok: false, error: '不能打断主会话' }
-        subagents.interrupt(agentId, authority)
+        // authority 必须是 { kind: 'ancestor', agent }（根 Agent 是所有后代的上游）
+        subagents.interrupt(agentId, { kind: 'ancestor', agent: authority })
         return { ok: true }
       } catch (e) { return { ok: false, error: errText(e) } }
     })
@@ -793,7 +796,8 @@ return {
           if (!agents || !subagents) return { ok: false, error: '智能体服务不可用' }
           const parent = agents.get(s(pick(args, ['parentId']))) || agents.roots()[0]
           if (!parent) return { ok: false, error: '未找到主会话代理' }
-          const messageId = await subagents.followup(parent, s(pick(args, ['agentId'])), [{ type: 'text', text: s(pick(args, ['text'])) }], {})
+          const followupOptions = { source: { kind: 'user' }, signal: (typeof AbortController !== 'undefined' ? new AbortController().signal : undefined) }
+          const messageId = await subagents.followup(parent, s(pick(args, ['agentId'])), [{ type: 'text', text: s(pick(args, ['text'])) }], followupOptions)
           return { ok: true, messageId: s(messageId) }
         } catch (e) { return { ok: false, error: errText(e) } }
       },
@@ -813,7 +817,7 @@ return {
           if (!agents || !subagents) return { ok: false, error: '智能体服务不可用' }
           const authority = agents.roots()[0]
           if (!authority) return { ok: false, error: '未找到主会话代理' }
-          subagents.interrupt(s(pick(args, ['agentId'])), authority)
+          subagents.interrupt(s(pick(args, ['agentId'])), { kind: 'ancestor', agent: authority })
           return { ok: true }
         } catch (e) { return { ok: false, error: errText(e) } }
       },

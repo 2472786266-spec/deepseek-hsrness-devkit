@@ -430,9 +430,12 @@ return {
       const [busy, setBusy] = React.useState(false)
       const [note, setNote] = React.useState('')
       const canInterrupt = agent.status === 'running' && !agent.isRoot
-      const canMessage = !agent.isRoot
+      // one-shot（一次性任务）不能发新消息，只能查看
+      const isOneShot = agent.mode === 'one-shot'
+      const canMessage = !agent.isRoot && !isOneShot
       const label = agent.isRoot ? '★ 主会话' : (agent.label || '未命名')
-      const depth = (Number(agent.depth) || 0) + (agent.isRoot ? 0 : 1)
+      // listDescendants 自带真实 depth（直接子级=1）
+      const depth = Math.max(0, Number(agent.depth) || 0)
       // 运行时长（基于状态快照时间）
       let ageText = ''
       if (agent.createdAt && st.updatedAt) {
@@ -445,7 +448,16 @@ return {
         try {
           const sessions = ctx.get('sessions')
           if (!sessions || typeof sessions.openSubagent !== 'function') { patch({ insertHint: '当前页面不支持跳转子会话' }); return }
-          sessions.openSubagent({ parentSessionId: st.rootSessionId || (agent.parentId || ''), childSessionId: agent.id, mode: 'continuable' })
+          const parentId = st.rootSessionId || (agent.parentId || '')
+          const tryOpen = (mode) => {
+            sessions.openSubagent({ parentSessionId: parentId, childSessionId: agent.id, mode: mode })
+            return true
+          }
+          const mode = agent.mode === 'one-shot' ? 'one-shot' : 'continuable'
+          try { tryOpen(mode) } catch (e) {
+            // 模式不符时用另一种模式重试一次
+            try { tryOpen(mode === 'continuable' ? 'one-shot' : 'continuable') } catch (e2) { patch({ insertHint: '打开会话失败' }) }
+          }
         } catch (e) { patch({ insertHint: '打开会话失败' }) }
       }
       const goalLine = agent.isRoot && st.goal && st.goal.objective ? '🎯 ' + st.goal.objective : ''
@@ -470,6 +482,7 @@ return {
         StatusBadge(agent.status),
         el('div', { className: 'dk-agentname', title: agent.id }, label, el('span', { className: 'dk-mono' }, ' ' + String(agent.id || '').slice(0, 12))),
         ageText ? el('span', { className: 'dk-tip dk-age', title: '运行时长' }, ageText) : null,
+        isOneShot ? el('span', { className: 'dk-tip', title: '一次性任务，完成后不能继续发消息' }, '一次性') : null,
         el('div', { className: 'dk-agentactions' },
           !agent.isRoot ? el('button', { className: 'dk-btn-sm', title: '跳转到该智能体的会话页面', onClick: openSession }, '打开') : null,
           canMessage ? el('button', { className: 'dk-btn-sm dk-btn-primary', onClick: () => { setOpenMsg(!openMsg); setNote('') } }, openMsg ? '收起' : '发消息') : null,
