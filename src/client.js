@@ -205,6 +205,7 @@ return {
           note ? el('span', { className: 'dk-note' }, note) : null,
         ),
         data && data.repo ? el('div', { className: 'dk-tip' }, '仓库: ' + data.repo.path) : null,
+        data && data.note ? el('div', { className: 'dk-note' }, data.note) : null,
         !data && note ? el('div', { className: 'dk-empty' }, note) : null,
         data && entries.length === 0 ? el('div', { className: 'dk-empty' }, '工作区干净，没有变更。') : null,
         entries.length > 0 ? el('div', null,

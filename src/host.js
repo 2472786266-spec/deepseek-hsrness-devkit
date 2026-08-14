@@ -500,33 +500,28 @@ return {
       return repos
     }
     const gitRunAt = async (repoPath, argsStr) => {
-      if (!shell) return { stdout: '' }
+      if (!shell) return { out: '', err: '', code: -1 }
       try {
-        // 注意：DSH shell 的 stdout 是 CollectedOutput 对象 {text, truncated}，不是字符串；
-        // 且 PowerShell -Command 模式下「表达式结果 + exit 0」不落输出，必须让 git 原生输出直接进采集器。
-        const command = '$ErrorActionPreference = "SilentlyContinue"; & git -C ' + psQuote(repoPath) + ' ' + argsStr + ' 2>&1'
+        // 不吞错误：spawn 失败时 stderr 保留真实原因
+        const command = '& git -C ' + psQuote(repoPath) + ' ' + argsStr + ' 2>&1'
         const spec = shell.resolve({ command: command })
         const res = await shell.run(spec)
-        // 归一化：兼容字符串 / CollectedOutput {text} / 字符串数组 / 对象数组
-        const normOut = (v) => {
-          if (v === undefined || v === null) return ''
-          if (typeof v === 'string') return v
-          if (Array.isArray(v)) {
-            return v.map((x) => {
-              if (typeof x === 'string') return x
-              if (x && typeof x === 'object') return s(pick(x, ['text', 'data', 'line', 'message', 'output'])) || JSON.stringify(x)
-              return String(x)
-            }).join('\n')
-          }
-          if (typeof v === 'object') {
-            const inner = pick(v, ['text', 'stdout', 'output', 'out', 'data', 'line'])
-            if (inner !== undefined && inner !== null && inner !== v) return normOut(inner)
-            return JSON.stringify(v)
-          }
-          return String(v)
+        const t = (v) => (v && typeof v === 'object' && typeof v.text === 'string') ? v.text : s(v)
+        return { out: t(pick(res, ['stdout', 'output', 'out'])), err: t(pick(res, ['stderr'])), code: n(pick(res, ['exitCode', 'code'])) }
+      } catch (e) { return { out: '', err: errText(e), code: -1 } }
+    }
+    // 分支降级：不 spawn 任何进程，直接读 .git/HEAD（沙箱禁止外部程序时仍可用）
+    async function branchFromHead(repoPath) {
+      try {
+        let rel = '.git/HEAD'
+        if (repoPath && repoPath !== workspaceRoot && repoPath.indexOf(workspaceRoot) === 0) {
+          rel = repoPath.slice(workspaceRoot.length).replace(/^[\\/]+/, '').replace(/\\/g, '/') + '/.git/HEAD'
         }
-        return { stdout: normOut(pick(res, ['stdout', 'output', 'out'])) }
-      } catch (e) { return { stdout: errText(e) } }
+        const text = await fs.readText(await fs.resolve(rel, { cwd: workspaceRoot }))
+        const m = text.trim().match(/^ref:\s*refs\/heads\/(.+)$/)
+        if (m) return m[1]
+        return text.trim().slice(0, 10) || ''
+      } catch (e) { return '' }
     }
     harness.handle('git-status', async (args) => {
       try {
@@ -537,16 +532,16 @@ return {
         if (want) repo = repos.find((r) => r.path === want) || repo
         if (!repo) return { ok: false, error: '未在当前工作区找到 git 仓库（支持根目录与一层子目录自动探测）' }
         const r = await gitRunAt(repo.path, 'status --porcelain=v1 --branch')
-        const out = r.stdout || ''
+        const out = r.out || ''
+        const errOut = (r.err || '').trim()
         if (out.indexOf('fatal: not a git repository') >= 0 || out.indexOf('not a git repo') >= 0) return { ok: false, error: '该路径不是有效的 git 仓库' }
         if (out.indexOf('fatal:') >= 0) return { ok: false, error: out.split(/\r?\n/).find((x) => x.indexOf('fatal:') >= 0) || 'git 执行失败' }
+        // git 命令失败/被沙箱拒绝时优雅降级：分支名来自 .git/HEAD，变更列表显示原因
+        const gitBlocked = !out.trim() && r.code !== 0
+        const branch = gitBlocked ? await branchFromHead(repo.path) : ''
         const lines = out.split(/\r?\n/).map((x) => x.trim()).filter((x) => x)
-        let branch = ''
         let start = 0
-        if (lines.length > 0 && lines[0].indexOf('## ') === 0) {
-          branch = lines[0].slice(3).split('...')[0].trim()
-          start = 1
-        }
+        if (lines.length > 0 && lines[0].indexOf('## ') === 0) start = 1
         const entries = []
         for (let i = start; i < lines.length; i++) {
           const ln = lines[i]
@@ -556,7 +551,8 @@ return {
           const path = ln.slice(3)
           entries.push({ x: x, y: y, path: path, staged: x !== ' ' && x !== '?', unstaged: y !== ' ', untracked: x === '?' })
         }
-        return { ok: true, branch: branch, entries: entries, repo: repo, repos: repos }
+        const note = gitBlocked ? 'git 命令不可用（当前会话沙箱禁止执行外部程序' + (errOut ? '：' + errOut : '') + '）；分支名来自 .git/HEAD，暂存/丢弃等操作暂不可用' : ''
+        return { ok: true, branch: branch, entries: entries, repo: repo, repos: repos, note: note }
       } catch (e) { return { ok: false, error: errText(e) } }
     })
     harness.handle('git-op', async (args) => {
@@ -573,7 +569,9 @@ return {
         else if (op === 'discard') argStr = 'restore -- ' + psQuote(path)
         else return { ok: false, error: '未知操作' }
         const r = await gitRunAt(repoPath, argStr)
-        const out = r.stdout || ''
+        const out = r.out || ''
+        const errOut = (r.err || '').trim()
+        if (r.code !== 0 && !out.trim()) return { ok: false, error: 'git 命令不可用（会话沙箱禁止执行外部程序' + (errOut ? '：' + errOut : '') + '）' }
         if (out.indexOf('fatal:') >= 0 || out.indexOf('error:') >= 0) return { ok: false, error: out.split(/\r?\n/).find((x) => x.indexOf('fatal:') >= 0 || x.indexOf('error:') >= 0) || out.slice(0, 200) }
         return { ok: true, op: op }
       } catch (e) { return { ok: false, error: errText(e) } }
