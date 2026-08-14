@@ -187,7 +187,7 @@ return {
     // 父级定位缓存：listDescendants 只覆盖当前根会话树；live 注册表里的子智能体可能属于其他父级
     // 行动时用 listChildren 反查真实直接父级（8 秒 TTL）
     const parentCache = new Map()
-    async function findParentOf(childId) {
+    async function findParentOf(childId, debugArr) {
       if (!subagents) return null
       const hit = parentCache.get(childId)
       if (hit && now() - hit.at < 8000) return hit.parent
@@ -205,7 +205,10 @@ return {
             parentCache.set(childId, { parent: c, at: now() })
             return c
           }
-        } catch (e) {}
+          if (debugArr) debugArr.push({ pid: pid, found: false, count: children ? children.length : 0, err: '' })
+        } catch (e) {
+          if (debugArr) debugArr.push({ pid: pid, found: false, count: -1, err: errText(e) })
+        }
       }
       parentCache.set(childId, { parent: null, at: now() })
       return null
@@ -526,8 +529,9 @@ return {
       try {
         const agentId = s(pick(args, ['agentId']))
         if (!agentId) return { ok: false, error: '目标为空' }
-        const parent = await findParentOf(agentId)
-        return { ok: true, parentId: parent ? agentIdOf(parent) : '' }
+        const debugArr = []
+        const parent = await findParentOf(agentId, debugArr)
+        return { ok: true, parentId: parent ? agentIdOf(parent) : '', debug: debugArr.slice(0, 5) }
       } catch (e) { return { ok: false, error: errText(e) } }
     })
     harness.handle('job-kill', async (args) => {

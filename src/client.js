@@ -451,11 +451,15 @@ return {
           const mode = agent.mode === 'one-shot' ? 'one-shot' : 'continuable'
           // 真实直接父级：优先用状态里的 parentId，缺失时向宿主反查（agent-parent）
           let parentId = st.rootSessionId || (agent.parentId || '')
+          let debugInfo = ''
           if (!agent.parentId) {
             try {
               const res = await host.call('agent-parent', { agentId: agent.id })
               if (res && res.ok && res.parentId) parentId = res.parentId
-            } catch (e) {}
+              if (res && res.ok && Array.isArray(res.debug) && res.debug.length > 0) {
+                debugInfo = ' [诊断: ' + res.debug.map((d) => d.pid.slice(0, 10) + (d.err ? '!' + d.err.slice(0, 60) : '~' + d.count)).join('; ') + ']'
+              }
+            } catch (e) { debugInfo = ' [诊断: 反查异常]' }
           }
           const attempts = [
             function () { sessions.openSubagent({ parentSessionId: parentId, childSessionId: agent.id, mode: mode }) },
@@ -465,7 +469,7 @@ return {
           for (const fn of attempts) {
             try { fn(); return } catch (e) {}
           }
-          patch({ insertHint: '打开会话失败（父级: ' + parentId + '）' })
+          patch({ insertHint: '打开会话失败（父级: ' + parentId + '）' + debugInfo })
         } catch (e) { patch({ insertHint: '打开会话失败' }) }
       }
       const goalLine = agent.isRoot && st.goal && st.goal.objective ? '🎯 ' + st.goal.objective : ''

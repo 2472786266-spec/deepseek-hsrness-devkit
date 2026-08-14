@@ -88,6 +88,7 @@ async function main() {
   await sleep(2000)
   const hrefAfter = await ev(`location.href`)
   console.log('OPEN-NAVIGATED:', hrefBefore !== hrefAfter ? 'YES (' + hrefAfter.slice(0, 90) + ')' : 'NO (href unchanged)')
+  console.log('OPEN-HINT:', await ev(`(() => { const n = document.querySelector('.dk-dock .dk-note'); return n ? n.textContent.slice(0, 240) : '(无提示)' })()`))
   // 导航回原会话
   if (hrefBefore !== hrefAfter) {
     await send('Page.navigate', { url: hrefBefore })
