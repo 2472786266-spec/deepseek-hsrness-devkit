@@ -505,7 +505,25 @@ return {
         const command = '$ErrorActionPreference = "SilentlyContinue"; $out = (& git -C ' + psQuote(repoPath) + ' ' + argsStr + ') 2>&1 | ForEach-Object { $_.ToString() }; [string]::Join([Environment]::NewLine, $out); exit 0'
         const spec = shell.resolve({ command: command })
         const res = await shell.run(spec)
-        return { stdout: s(pick(res, ['stdout', 'output', 'out'])) }
+        // 归一化：shell 服务返回的 stdout 可能是字符串 / 字符串数组 / 对象数组
+        const normOut = (v) => {
+          if (v === undefined || v === null) return ''
+          if (typeof v === 'string') return v
+          if (Array.isArray(v)) {
+            return v.map((x) => {
+              if (typeof x === 'string') return x
+              if (x && typeof x === 'object') return s(pick(x, ['text', 'data', 'line', 'message', 'output'])) || JSON.stringify(x)
+              return String(x)
+            }).join('\n')
+          }
+          if (typeof v === 'object') {
+            const inner = pick(v, ['stdout', 'output', 'out', 'data', 'text', 'line'])
+            if (inner !== undefined && inner !== null && inner !== v) return normOut(inner)
+            return JSON.stringify(v)
+          }
+          return String(v)
+        }
+        return { stdout: normOut(pick(res, ['stdout', 'output', 'out'])) }
       } catch (e) { return { stdout: errText(e) } }
     }
     harness.handle('git-status', async (args) => {
