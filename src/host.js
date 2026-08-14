@@ -41,6 +41,19 @@ return {
     let usageCurrent = null
     let usageLast = null
     const usageTotals = { input: 0, output: 0, calls: 0, startedAt: 0 }
+    const modelWindowCache = new Map()
+    const contextFor = async (provider, model) => {
+      const key = provider + '::' + model
+      if (modelWindowCache.has(key)) return modelWindowCache.get(key)
+      let win = 0
+      try {
+        const info = await llm.resolveModelInfo(provider, model)
+        win = n(pick(info, ['contextWindow', 'contextLength', 'maxContext'])) || 0
+      } catch (e) {}
+      if (modelWindowCache.size > 50) modelWindowCache.clear()
+      modelWindowCache.set(key, win)
+      return win
+    }
 
     const mediaDirName = '.dsh-media'
     const legacyIndexRel = '.dsh-media-index.json'
@@ -274,7 +287,9 @@ return {
             usageTotals.output += rec.outputTokens
             usageTotals.calls += 1
             if (!usageTotals.startedAt) usageTotals.startedAt = t0
-            usageLast = { provider: rec.provider, model: rec.model, inputTokens: rec.inputTokens, outputTokens: rec.outputTokens, firstTokenMs: rec.firstTokenMs, durationMs: rec.durationMs, tps: rec.tps, at: end }
+            let win = 0
+            try { win = await contextFor(rec.provider, rec.model) } catch (e) {}
+            usageLast = { provider: rec.provider, model: rec.model, inputTokens: rec.inputTokens, outputTokens: rec.outputTokens, firstTokenMs: rec.firstTokenMs, durationMs: rec.durationMs, tps: rec.tps, contextWindow: win, contextPct: win > 0 ? Math.min(100, Math.round(rec.inputTokens / win * 100)) : null, at: end }
             usageCurrent = null
           }
         },
@@ -334,7 +349,8 @@ return {
         seen.add(id)
         const m = agentMeta.get(id) || {}
         const isRoot = id === rootId
-        out.push({ id: id, label: s(pick(entry[1], ['label', 'name', 'title'])) || s(m.label) || '', parentId: '', depth: 0, isRoot: isRoot, live: true, status: s(m.status) || 'unknown', createdAt: n(m.createdAt) })
+        // 状态兜底：插件重启后 agentMeta 为空，优先从 live Agent 对象读状态
+        out.push({ id: id, label: s(pick(entry[1], ['label', 'name', 'title'])) || s(m.label) || '', parentId: '', depth: 0, isRoot: isRoot, live: true, status: s(m.status) || s(pick(entry[1], ['status', 'state', 'phase'])) || 'idle', createdAt: n(m.createdAt) })
       }
       for (const row of out) {
         if (!row.label) {
@@ -573,7 +589,11 @@ return {
         else if (op === 'stage-all') argStr = 'add -A'
         else if (op === 'unstage') argStr = 'restore --staged -- ' + psQuote(path)
         else if (op === 'discard') argStr = 'restore -- ' + psQuote(path)
-        else return { ok: false, error: '未知操作' }
+        else if (op === 'commit') {
+          const message = s(pick(args, ['message'])).trim()
+          if (!message) return { ok: false, error: '提交信息不能为空' }
+          argStr = 'commit -m ' + psQuote(message.slice(0, 500))
+        } else return { ok: false, error: '未知操作' }
         const r = await gitRunAt(repoPath, argStr)
         const out = r.out || ''
         const errOut = (r.err || '').trim()

@@ -77,7 +77,51 @@ return {
       const [visionRef, setVisionRef] = React.useState(null)
       const [showManager, setShowManager] = React.useState(false)
       const [note, setNote] = React.useState('')
+      const [lightbox, setLightbox] = React.useState(null)
       const visionEntry = media.find((m) => m.ref === visionRef)
+      const saveFile = (file, autoVision) => {
+        if (!file) return
+        try {
+          if (typeof FileReader === 'undefined') { setNote('浏览器文件读取不可用，请使用路径导入'); return }
+          const reader = new FileReader()
+          reader.onload = () => {
+            const dataUrl = String(reader.result || '')
+            const comma = dataUrl.indexOf(',')
+            const b64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl
+            host.call('media-save', { name: file.name || '粘贴图片', base64: b64 }).then(async (res) => {
+              await refresh()
+              if (res && res.ok) {
+                setNote(autoVision ? '已上传，自动打开识图 ✓' : '已保存到图库 ✓')
+                if (autoVision && res.entry && res.entry.ref) setVisionRef(res.entry.ref)
+              } else setNote('保存失败: ' + (res && res.error ? res.error : '未知'))
+            }).catch(() => setNote('保存失败'))
+          }
+          reader.onerror = () => setNote('读取文件失败')
+          reader.readAsDataURL(file)
+        } catch (e) { setNote('浏览器文件读取不可用，请使用路径导入') }
+      }
+      // 剪贴板粘贴图片 → 自动上传并识图（借鉴 modlens 的粘贴识图体验）
+      React.useEffect(() => {
+        const onPaste = (ev) => {
+          const items = ev && ev.clipboardData && ev.clipboardData.items
+          if (!items) return
+          for (const it of items) {
+            if (it && it.kind === 'file') {
+              const f = it.getAsFile ? it.getAsFile() : null
+              if (f && f.type && f.type.indexOf('image/') === 0) { saveFile(f, true); break }
+            }
+          }
+        }
+        try { window.addEventListener('paste', onPaste) } catch (e) {}
+        return () => { try { window.removeEventListener('paste', onPaste) } catch (e) {} }
+      }, [])
+      const onDrop = (ev) => {
+        try {
+          ev.preventDefault()
+          const files = ev && ev.dataTransfer && ev.dataTransfer.files
+          if (files && files[0]) saveFile(files[0], false)
+        } catch (e) {}
+      }
       React.useEffect(() => {
         for (const m of media) {
           if (!mediaCache.has(m.ref)) {
@@ -89,23 +133,7 @@ return {
       }, [media])
       const onFileChange = (ev) => {
         const files = ev && ev.target && ev.target.files
-        const file = files && files[0]
-        if (!file) return
-        try {
-          if (typeof FileReader === 'undefined') { setNote('浏览器文件读取不可用，请使用路径导入'); return }
-          const reader = new FileReader()
-          reader.onload = () => {
-            const dataUrl = String(reader.result || '')
-            const comma = dataUrl.indexOf(',')
-            const b64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl
-            host.call('media-save', { name: file.name, base64: b64 }).then(async (res) => {
-              await refresh()
-              setNote(res && res.ok ? '已保存到图库 ✓' : '保存失败: ' + (res && res.error ? res.error : '未知'))
-            }).catch(() => setNote('保存失败'))
-          }
-          reader.onerror = () => setNote('读取文件失败')
-          reader.readAsDataURL(file)
-        } catch (e) { setNote('浏览器文件读取不可用，请使用路径导入') }
+        saveFile(files && files[0], false)
       }
       const importPath = async () => {
         if (!pathText.trim()) return
@@ -128,7 +156,7 @@ return {
       }
       const remove = async (ref) => { try { await host.call('media-delete', { ref: ref }); mediaCache.delete(ref); await refresh() } catch (e) {} }
       return el('div', { className: 'dk-panel-backdrop', onMouseDown: () => props.onClose() },
-        el('div', { className: 'dk-panel dk-gallery', onMouseDown: (ev) => ev.stopPropagation() },
+        el('div', { className: 'dk-panel dk-gallery', onMouseDown: (ev) => ev.stopPropagation(), onDragOver: (ev) => { try { ev.preventDefault() } catch (e) {} }, onDrop: onDrop },
           el('div', { className: 'dk-panel-head' },
             el('span', { className: 'dk-panel-title' }, '🖼 多模态图库（' + media.length + '）'),
             el('button', { className: 'dk-btn-sm', onClick: () => setShowManager(!showManager), title: '管理视觉模型（识图 API）' }, '🛰 视觉模型'),
@@ -142,10 +170,11 @@ return {
             el('button', { className: 'dk-btn', onClick: importPath, disabled: !pathText.trim() }, '导入'),
             note ? el('span', { className: 'dk-note' }, note) : null,
           ),
+          el('div', { className: 'dk-tip' }, '支持拖拽图片到此处上传；在页面任意处 Ctrl+V 粘贴图片将自动上传并打开识图；点击缩略图可放大预览。'),
           visionEntry ? el(VisionPanel, { entry: visionEntry, inputActions: props.inputActions, input: props.input, onClose: () => setVisionRef(null) }) : null,
           media.length === 0 ? el('div', { className: 'dk-empty' }, '图库为空。选择文件上传、输入本机路径导入，或让智能体保存图表到图库。') :
             el('div', { className: 'dk-grid' }, media.map((m) => el('div', { className: 'dk-media-card', key: m.ref },
-              mediaCache.get(m.ref) ? el('img', { className: 'dk-thumb', src: mediaCache.get(m.ref), alt: m.name }) : el('div', { className: 'dk-thumb dk-thumb-empty' }, '加载中…'),
+              mediaCache.get(m.ref) ? el('img', { className: 'dk-thumb', src: mediaCache.get(m.ref), alt: m.name, title: '点击放大', onClick: () => setLightbox(mediaCache.get(m.ref)) }) : el('div', { className: 'dk-thumb dk-thumb-empty' }, '加载中…'),
               el('div', { className: 'dk-media-name', title: m.name }, m.name),
               el('div', { className: 'dk-media-meta' }, m.sizeText || '', m.realPath ? ' · 已解码' : ''),
               el('div', { className: 'dk-media-actions' },
@@ -154,6 +183,8 @@ return {
                 el('button', { className: 'dk-btn-sm dk-btn-danger', onClick: () => remove(m.ref) }, '删除'),
               ),
             ))),
+          lightbox ? el('div', { className: 'dk-lightbox', onMouseDown: () => setLightbox(null) },
+            el('img', { className: 'dk-lightbox-img', src: lightbox, onMouseDown: (ev) => ev.stopPropagation() })) : null,
         ),
       )
     }
@@ -236,6 +267,7 @@ return {
       const [busy, setBusy] = React.useState(false)
       const [note, setNote] = React.useState('')
       const [repo, setRepo] = React.useState('')
+      const [commitMsg, setCommitMsg] = React.useState('')
       const load = async (wantRepo) => {
         setBusy(true)
         try {
@@ -249,10 +281,11 @@ return {
         setBusy(false)
       }
       React.useEffect(() => { load('') }, [])
-      const act = async (op, path) => {
+      const act = async (op, path, message) => {
         try {
-          const res = await host.call('git-op', { op: op, path: path, repo: repo })
+          const res = await host.call('git-op', { op: op, path: path, repo: repo, message: message || '' })
           setNote(op + (res && res.ok ? ' ✓' : ' 失败: ' + (res && res.error ? res.error : '未知')))
+          if (res && res.ok && op === 'commit') setCommitMsg('')
           await load()
         } catch (e) { setNote('操作失败') }
       }
@@ -282,6 +315,10 @@ return {
         ),
         data && data.repo ? el('div', { className: 'dk-tip' }, '仓库: ' + data.repo.path) : null,
         data && data.note ? el('div', { className: 'dk-note' }, data.note) : null,
+        data ? el('div', { className: 'dk-uploadrow' },
+          el('input', { className: 'dk-input dk-commit-in', placeholder: '提交信息（Enter 提交）', value: commitMsg, onChange: (ev) => setCommitMsg(ev.target.value), onKeyDown: (ev) => { if (ev.key === 'Enter' && commitMsg.trim()) act('commit', '', commitMsg) } }),
+          el('button', { className: 'dk-btn dk-btn-primary', onClick: () => act('commit', '', commitMsg), disabled: !commitMsg.trim() || staged.length === 0 }, '提交已暂存'),
+        ) : null,
         !data && note ? el('div', { className: 'dk-empty' }, note) : null,
         data && entries.length === 0 ? el('div', { className: 'dk-empty' }, '工作区干净，没有变更。') : null,
         entries.length > 0 ? el('div', null,
@@ -564,9 +601,10 @@ return {
       const s = useStore()
       const u = s.state ? s.state.usage : null
       const ut = u ? (u.current && u.current.status === 'streaming' ? u.current : u.last) : null
+      const pct = (ut && ut.contextPct !== null && ut.contextPct !== undefined) ? ut.contextPct : (u && u.last && u.last.contextPct !== null && u.last.contextPct !== undefined ? u.last.contextPct : null)
       if (!ut) return el('div', { className: 'dk-usage' }, '⚡ 令牌统计待首次生成')
       return el('div', { className: 'dk-usage' },
-        '⚡ ' + ut.model + ' · 出 ' + ut.outputTokens + ' tok · ' + (ut.durationMs ? (ut.durationMs / 1000).toFixed(1) + 's' : '生成中') + ' · ' + ut.tps + ' T/s · 入 ' + ut.inputTokens + ' tok',
+        '⚡ ' + ut.model + ' · 出 ' + ut.outputTokens + ' tok · ' + (ut.durationMs ? (ut.durationMs / 1000).toFixed(1) + 's' : '生成中') + ' · ' + ut.tps + ' T/s · 入 ' + ut.inputTokens + ' tok' + (pct !== null ? ' · 上下文 ' + pct + '%' : ''),
       )
     }
 
@@ -620,8 +658,8 @@ return {
     function SelfCard() {
       const s = useStore()
       return el('div', { className: 'dk-self' },
-        el('div', { className: 'dk-self-title' }, '✅ 开发增强套件 v4.0 已激活（原生嵌入版）'),
-        el('div', { className: 'dk-self-line' }, '🖼 图库按钮在输入框工具行 · 🧭 监督按钮在会话标题栏 · ⚡ 令牌统计在输入框下方 · 🛰 视觉模型管理在设置页'),
+        el('div', { className: 'dk-self-title' }, '✅ 开发增强套件 v4.1 已激活（原生嵌入版）'),
+        el('div', { className: 'dk-self-line' }, '🖼 图库（Ctrl+Shift+G）· 🧭 监督（Ctrl+Shift+S）· 拖拽/粘贴上传 · Git 提交 · ⚡ 令牌统计+上下文占用 · 🛰 视觉模型管理在设置页'),
         el('div', { className: 'dk-tip' }, '打开「设置 → 开发增强套件」配置视觉模型与皮肤。'),
       )
     }
@@ -638,7 +676,7 @@ return {
       return el(AgentsPanel, { onClose: () => patch({ openPanel: 'none' }) })
     }
 
-    // ── 全局轮询 + 皮肤应用 ──
+    // ── 全局轮询 + 皮肤应用 + 快捷键 ──
     function Boot() {
       const s = useStore()
       React.useEffect(() => {
@@ -652,6 +690,19 @@ return {
           b.classList.add('dk-skin-' + (s.skin || 'light'))
         } catch (e) {}
       }, [s.skin])
+      React.useEffect(() => {
+        const onKey = (ev) => {
+          try {
+            if (ev.key === 'Escape') { patch({ openPanel: 'none' }); return }
+            if (!(ev.ctrlKey && ev.shiftKey)) return
+            const k = (ev.key || '').toLowerCase()
+            if (k === 'g') { ev.preventDefault(); patch({ openPanel: store.openPanel === 'gallery' ? 'none' : 'gallery' }) }
+            else if (k === 's') { ev.preventDefault(); patch({ openPanel: store.openPanel === 'agents' ? 'none' : 'agents' }) }
+          } catch (e) {}
+        }
+        try { window.addEventListener('keydown', onKey) } catch (e) {}
+        return () => { try { window.removeEventListener('keydown', onKey) } catch (e) {} }
+      }, [])
       return null
     }
 
@@ -695,5 +746,6 @@ return {
     styles.insert(".dk-filepath{flex:1;min-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:#6b7280}.dk-filetable{max-height:240px;overflow:auto;border:1px solid rgba(110,120,140,.2);border-radius:8px;margin-top:6px}.dk-filerow{display:flex;align-items:center;gap:8px;padding:4px 8px;cursor:pointer;border-top:1px solid rgba(110,120,140,.1)}")
     styles.insert(".dk-filerow:first-child{border-top:none}.dk-filerow:hover{background:rgba(79,140,255,.1)}.dk-ficon{flex:none}.dk-fname{flex:1;min-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.dk-fsize{font-size:11px;color:#8a8f98}.dk-preview{margin-top:10px;border:1px solid rgba(110,120,140,.2);border-radius:8px;overflow:hidden}")
     styles.insert(".dk-preview-head{display:flex;align-items:center;gap:8px;padding:6px 10px;font-size:12px;font-weight:600;background:rgba(79,140,255,.08);border-bottom:1px solid rgba(110,120,140,.18)}.dk-preview-close{margin-left:auto}.dk-preview-img{display:block;max-width:100%;max-height:280px;margin:0 auto}.dk-preview-text{margin:0;padding:10px;font:12px/1.6 Consolas,Menlo,monospace;white-space:pre-wrap;word-break:break-all;max-height:260px;overflow:auto;background:rgba(0,0,0,.03)}")
+    styles.insert(".dk-lightbox{position:fixed;inset:0;z-index:2147483100;background:rgba(0,0,0,.75);display:flex;align-items:center;justify-content:center;cursor:zoom-out}.dk-lightbox-img{max-width:92vw;max-height:88vh;border-radius:8px;box-shadow:0 12px 60px rgba(0,0,0,.6);cursor:default}.dk-commit-in{flex:1;min-width:200px}.dk-thumb{cursor:zoom-in}")
   },
 }
