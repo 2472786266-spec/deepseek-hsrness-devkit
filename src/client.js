@@ -16,7 +16,7 @@ return {
     } catch (e) {}
     const SKIN_LIST = ['light', 'night', 'ocean', 'forest', 'sunset', 'graphite']
     const SKIN_NAMES = { light: '亮色', night: '暗夜', ocean: '海洋', forest: '森林', sunset: '日落', graphite: '水墨' }
-    const store = { openPanel: 'none', workbench: false, state: null, connected: false, lastError: '', insertHint: '', skin: initSkin }
+    const store = { openPanel: 'none', workbench: false, autoVisionRef: null, state: null, connected: false, lastError: '', insertHint: '', skin: initSkin }
     const listeners = new Set()
     const emit = () => { for (const fn of listeners) { try { fn() } catch (e) {} } }
     const patch = (p) => { Object.assign(store, p); emit() }
@@ -100,21 +100,13 @@ return {
           reader.readAsDataURL(file)
         } catch (e) { setNote('浏览器文件读取不可用，请使用路径导入') }
       }
-      // 剪贴板粘贴图片 → 自动上传并识图（借鉴 modlens 的粘贴识图体验）
+      // 粘贴图片的识图联动：Boot 全局粘贴上传后置 autoVisionRef，这里消费它自动打开识图面板
       React.useEffect(() => {
-        const onPaste = (ev) => {
-          const items = ev && ev.clipboardData && ev.clipboardData.items
-          if (!items) return
-          for (const it of items) {
-            if (it && it.kind === 'file') {
-              const f = it.getAsFile ? it.getAsFile() : null
-              if (f && f.type && f.type.indexOf('image/') === 0) { saveFile(f, true); break }
-            }
-          }
+        if (s.autoVisionRef && media.find((m) => m.ref === s.autoVisionRef)) {
+          setVisionRef(s.autoVisionRef)
+          patch({ autoVisionRef: null })
         }
-        try { window.addEventListener('paste', onPaste) } catch (e) {}
-        return () => { try { window.removeEventListener('paste', onPaste) } catch (e) {} }
-      }, [])
+      }, [s.autoVisionRef, media])
       const onDrop = (ev) => {
         try {
           ev.preventDefault()
@@ -273,17 +265,18 @@ return {
       )
     }
 
-    function WorkbenchButton() {
+    function WorkbenchButton(props) {
       const s = useStore()
       const st = s.state || { agents: [] }
       const running = (st.agents || []).filter((a) => a.status === 'running').length
+      const wide = !!(props && props.wide)
       return el('button', {
         className: 'dk-footbtn' + (s.workbench ? ' dk-footbtn-on' : ''),
         title: '开发工作台（智能体/任务/变更/文件/工作流/目标）',
         onClick: () => patch({ workbench: !s.workbench }),
       },
         el('span', { className: 'dk-footicon' }, '🧰'),
-        el('span', { className: 'dk-footlabel' }, '工作台'),
+        wide ? el('span', { className: 'dk-footlabel' }, '工作台') : null,
         running > 0 ? el('span', { className: 'dk-badge' }, String(running)) : null,
       )
     }
@@ -663,7 +656,9 @@ return {
         el('span', { className: 'dk-dockstats' }, '🧭 智能体 ' + total + ' · 运行 ' + running + ' · 任务 ' + (st.jobs ? st.jobs.length : 0) + ' · 图库 ' + (st.media ? st.media.length : 0)),
         el('button', { className: 'dk-btn-sm', onClick: () => patch({ openPanel: 'gallery' }) }, '🖼 图库'),
         el('button', { className: 'dk-btn-sm', onClick: () => patch({ openPanel: 'agents' }) }, '🧭 监督'),
+        el('button', { className: 'dk-btn-sm', onClick: () => patch({ workbench: !s.workbench }) }, '🧰 工作台'),
         el('button', { className: 'dk-btn-sm', onClick: refresh, title: '立即刷新状态' }, '刷新'),
+        el('span', { className: 'dk-ver', title: '开发增强套件版本（看不到新功能时请刷新页面）' }, 'v4.3'),
         s.insertHint ? el('span', { className: 'dk-note' }, s.insertHint) : null,
         s.lastError ? el('span', { className: 'dk-note' }, '⚠ ' + s.lastError) : null,
       )
@@ -697,8 +692,8 @@ return {
     function SelfCard() {
       const s = useStore()
       return el('div', { className: 'dk-self' },
-        el('div', { className: 'dk-self-title' }, '✅ 开发增强套件 v4.1 已激活（原生嵌入版）'),
-        el('div', { className: 'dk-self-line' }, '🖼 图库（Ctrl+Shift+G）· 🧭 监督（Ctrl+Shift+S）· 拖拽/粘贴上传 · Git 提交 · ⚡ 令牌统计+上下文占用 · 🛰 视觉模型管理在设置页'),
+        el('div', { className: 'dk-self-title' }, '✅ 开发增强套件 v4.3 已激活（自检修复版）'),
+        el('div', { className: 'dk-self-line' }, '🧰 工作台（侧边栏底部+状态条）· 🖼 图库（Ctrl+Shift+G）· 🧭 监督（Ctrl+Shift+S）· 全局粘贴识图 · Git 提交 · ⚡ 令牌统计+上下文占用 · 🛰 视觉模型管理在设置页'),
         el('div', { className: 'dk-tip' }, '打开「设置 → 开发增强套件」配置视觉模型与皮肤。'),
       )
     }
@@ -742,6 +737,38 @@ return {
         try { window.addEventListener('keydown', onKey) } catch (e) {}
         return () => { try { window.removeEventListener('keydown', onKey) } catch (e) {} }
       }, [])
+      // 全局粘贴图片 → 自动上传 + 打开图库 + 自动识图（借鉴 modlens，页面任意处生效）
+      React.useEffect(() => {
+        const onPaste = (ev) => {
+          try {
+            const items = ev && ev.clipboardData && ev.clipboardData.items
+            if (!items) return
+            for (const it of items) {
+              if (it && it.kind === 'file') {
+                const f = it.getAsFile ? it.getAsFile() : null
+                if (!(f && f.type && f.type.indexOf('image/') === 0)) continue
+                if (typeof FileReader === 'undefined') return
+                const reader = new FileReader()
+                reader.onload = () => {
+                  const dataUrl = String(reader.result || '')
+                  const comma = dataUrl.indexOf(',')
+                  const b64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl
+                  host.call('media-save', { name: f.name || '粘贴图片', base64: b64 }).then(async (res) => {
+                    await refresh()
+                    if (res && res.ok && res.entry && res.entry.ref) {
+                      patch({ openPanel: 'gallery', autoVisionRef: res.entry.ref, insertHint: '已粘贴上传并打开识图 ✓' })
+                    }
+                  }).catch(() => {})
+                }
+                reader.readAsDataURL(f)
+                break
+              }
+            }
+          } catch (e) {}
+        }
+        try { window.addEventListener('paste', onPaste) } catch (e) {}
+        return () => { try { window.removeEventListener('paste', onPaste) } catch (e) {} }
+      }, [])
       return null
     }
 
@@ -752,7 +779,7 @@ return {
     slots.inject('conversation.input.overlay', () => slots.register({ name: 'conversation.input.overlay', id: 'devkit-agents-panel', order: 31, label: '监督弹层' }, () => el(AgentsOverlay, null)))
     slots.inject('conversation.session.header.actions', () => slots.register({ name: 'conversation.session.header.actions', id: 'devkit-agents-btn', order: 30, label: '智能体监督' }, () => el(AgentsButton, null)))
     slots.inject('settings.section', () => slots.register({ name: 'settings.section', id: 'devkit', order: 30, label: '开发增强套件' }, (props) => el(SettingsSection, props)))
-    slots.inject('sidebar.footer.action', () => slots.register({ name: 'sidebar.footer.action', id: 'devkit-workbench-btn', order: 10, label: '工作台' }, () => el(WorkbenchButton, null)))
+    slots.inject('sidebar.footer.action', () => slots.register({ name: 'sidebar.footer.action', id: 'devkit-workbench-btn', order: 10, label: '工作台' }, (props) => el(WorkbenchButton, props)))
     slots.inject('shell.overlay', () => slots.register({ name: 'shell.overlay', id: 'devkit-workbench', order: 10, label: '开发工作台' }, () => el(WorkbenchPanel, null)))
     slots.inject('shell.overlay', () => slots.register({ name: 'shell.overlay', id: 'devkit-boot', order: 10, label: '开发套件引导' }, () => el(Boot, null)))
     slots.inject('tool.view.cordis', () => slots.register({ name: 'tool.view.cordis', key: 'self' }, () => el(SelfCard, null)))
@@ -773,7 +800,7 @@ return {
     styles.insert(".dk-kanban{display:flex;gap:10px;align-items:flex-start}.dk-kcol{flex:1;min-width:0;background:rgba(110,120,140,.07);border:1px solid rgba(110,120,140,.18);border-radius:8px;padding:8px}.dk-khead{font-size:12px;font-weight:700;margin-bottom:6px}.dk-kcard{background:#ffffff;border:1px solid rgba(110,120,140,.2);border-radius:8px;padding:8px;margin-bottom:6px;box-shadow:0 1px 3px rgba(0,0,0,.06)}.dk-kid{font-size:11px;color:#6b7280;word-break:break-all}.dk-kkind{font-size:12px;margin:2px 0 6px;font-weight:600}")
     styles.insert(".dk-goal{border:1px solid rgba(79,140,255,.35);background:rgba(79,140,255,.07);border-radius:10px;padding:10px 12px}.dk-goal-obj{font-weight:600;margin-bottom:4px}.dk-goal-meta{font-size:12px;color:#6b7280}.dk-goal-block{font-size:12px;color:#ef4444;margin-top:4px}")
     styles.insert(".dk-vision{border:1px solid rgba(79,140,255,.35);background:rgba(79,140,255,.07);border-radius:10px;padding:10px 12px;margin:8px 0;display:flex;flex-direction:column;gap:6px}.dk-vision-result{width:100%;min-height:96px;resize:vertical;font-size:12px}.dk-manage-row{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:4px 0}.dk-manage-in{flex:1;min-width:130px}")
-    styles.insert(".dk-dock{display:flex;gap:8px;align-items:center;padding:4px 8px;border-radius:8px;background:rgba(110,120,140,.06);border:1px solid rgba(110,120,140,.15);flex-wrap:wrap;font-size:12px}.dk-dockstats{color:#6b7280}")
+    styles.insert(".dk-dock{display:flex;gap:8px;align-items:center;padding:4px 8px;border-radius:8px;background:rgba(110,120,140,.06);border:1px solid rgba(110,120,140,.15);flex-wrap:wrap;font-size:12px}.dk-dockstats{color:#6b7280}.dk-ver{font-size:10px;color:#9aa0aa;font-family:ui-monospace,Consolas,monospace}")
     styles.insert(".dk-usage{font-size:11px;color:#4f8cff;padding:2px 4px;white-space:nowrap}.dk-toolbtn{display:inline-flex;align-items:center;gap:4px;background:transparent;border:none;color:inherit;cursor:pointer;font:inherit;padding:4px 8px;border-radius:8px}.dk-toolbtn:hover{background:rgba(110,120,140,.14)}.dk-toolbtn-on{background:rgba(79,140,255,.18);color:#4f8cff}.dk-toolbtn-count{font-size:10px;color:#8a8f98}")
     styles.insert(".dk-badge{background:#ef4444;color:#fff;border-radius:9px;padding:0 7px;font-size:11px;line-height:16px}.dk-settings{display:flex;flex-direction:column;gap:4px;padding:4px 0}")
     styles.insert(".dk-self{border:1px solid rgba(79,140,255,.35);background:rgba(79,140,255,.07);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:6px}.dk-self-title{font-weight:700}.dk-self-line{font-size:12px;color:#6b7280}")

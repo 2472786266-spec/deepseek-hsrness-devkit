@@ -49,6 +49,9 @@ return {
       try {
         const info = await llm.resolveModelInfo(provider, model)
         win = n(pick(info, ['contextWindow', 'contextLength', 'maxContext'])) || 0
+        // 窗口字段可能在 context 子对象里：{ context: { contextWindow } }
+        const ctxObj = pick(info, ['context'])
+        if (!win && ctxObj && typeof ctxObj === 'object') win = n(pick(ctxObj, ['contextWindow', 'window', 'size'])) || 0
       } catch (e) {}
       if (modelWindowCache.size > 50) modelWindowCache.clear()
       modelWindowCache.set(key, win)
