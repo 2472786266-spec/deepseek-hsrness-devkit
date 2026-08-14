@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: DSH 官方文档
+    url: https://github.com/deepseek-ai/dsh
+    about: DeepSeek Harness 官方仓库
