@@ -162,7 +162,7 @@ return {
             el('button', { className: 'dk-btn', onClick: importPath, disabled: !pathText.trim() }, '导入'),
             note ? el('span', { className: 'dk-note' }, note) : null,
           ),
-          el('div', { className: 'dk-tip' }, '支持拖拽图片到此处上传；在页面任意处 Ctrl+V 粘贴图片将自动上传并打开识图；点击缩略图可放大预览。'),
+          el('div', { className: 'dk-tip' }, '支持拖拽图片到此处上传；页面任意处 Ctrl+V 粘贴图片（包括在聊天输入框内）将自动上传并打开识图；点击缩略图可放大预览。'),
           visionEntry ? el(VisionPanel, { entry: visionEntry, inputActions: props.inputActions, input: props.input, onClose: () => setVisionRef(null) }) : null,
           media.length === 0 ? el('div', { className: 'dk-empty' }, '图库为空。选择文件上传、输入本机路径导入，或让智能体保存图表到图库。') :
             el('div', { className: 'dk-grid' }, media.map((m) => el('div', { className: 'dk-media-card', key: m.ref },
@@ -658,7 +658,7 @@ return {
         el('button', { className: 'dk-btn-sm', onClick: () => patch({ openPanel: 'agents' }) }, '🧭 监督'),
         el('button', { className: 'dk-btn-sm', onClick: () => patch({ workbench: !s.workbench }) }, '🧰 工作台'),
         el('button', { className: 'dk-btn-sm', onClick: refresh, title: '立即刷新状态' }, '刷新'),
-        el('span', { className: 'dk-ver', title: '开发增强套件版本（看不到新功能时请刷新页面）' }, 'v4.3'),
+        el('span', { className: 'dk-ver', title: '开发增强套件版本（看不到新功能时请刷新页面）' }, 'v4.4'),
         s.insertHint ? el('span', { className: 'dk-note' }, s.insertHint) : null,
         s.lastError ? el('span', { className: 'dk-note' }, '⚠ ' + s.lastError) : null,
       )
@@ -692,7 +692,7 @@ return {
     function SelfCard() {
       const s = useStore()
       return el('div', { className: 'dk-self' },
-        el('div', { className: 'dk-self-title' }, '✅ 开发增强套件 v4.3 已激活（自检修复版）'),
+        el('div', { className: 'dk-self-title' }, '✅ 开发增强套件 v4.4 已激活（粘贴链路修复版）'),
         el('div', { className: 'dk-self-line' }, '🧰 工作台（侧边栏底部+状态条）· 🖼 图库（Ctrl+Shift+G）· 🧭 监督（Ctrl+Shift+S）· 全局粘贴识图 · Git 提交 · ⚡ 令牌统计+上下文占用 · 🛰 视觉模型管理在设置页'),
         el('div', { className: 'dk-tip' }, '打开「设置 → 开发增强套件」配置视觉模型与皮肤。'),
       )
@@ -738,36 +738,50 @@ return {
         return () => { try { window.removeEventListener('keydown', onKey) } catch (e) {} }
       }, [])
       // 全局粘贴图片 → 自动上传 + 打开图库 + 自动识图（借鉴 modlens，页面任意处生效）
+      // 注意：捕获阶段注册 + preventDefault，即使焦点在输入框/聊天编辑器内也能拦截到粘贴的图片
       React.useEffect(() => {
         const onPaste = (ev) => {
           try {
-            const items = ev && ev.clipboardData && ev.clipboardData.items
-            if (!items) return
-            for (const it of items) {
-              if (it && it.kind === 'file') {
-                const f = it.getAsFile ? it.getAsFile() : null
-                if (!(f && f.type && f.type.indexOf('image/') === 0)) continue
-                if (typeof FileReader === 'undefined') return
-                const reader = new FileReader()
-                reader.onload = () => {
-                  const dataUrl = String(reader.result || '')
-                  const comma = dataUrl.indexOf(',')
-                  const b64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl
-                  host.call('media-save', { name: f.name || '粘贴图片', base64: b64 }).then(async (res) => {
-                    await refresh()
-                    if (res && res.ok && res.entry && res.entry.ref) {
-                      patch({ openPanel: 'gallery', autoVisionRef: res.entry.ref, insertHint: '已粘贴上传并打开识图 ✓' })
-                    }
-                  }).catch(() => {})
+            const cd = ev && ev.clipboardData
+            if (!cd) return
+            let file = null
+            const items = cd.items
+            if (items) {
+              for (const it of items) {
+                if (it && it.kind === 'file') {
+                  const f = it.getAsFile ? it.getAsFile() : null
+                  if (f && f.type && f.type.indexOf('image/') === 0) { file = f; break }
                 }
-                reader.readAsDataURL(f)
-                break
               }
             }
+            if (!file && cd.files && cd.files.length > 0) {
+              const f0 = cd.files[0]
+              if (f0 && f0.type && f0.type.indexOf('image/') === 0) file = f0
+            }
+            if (!file) return
+            // 捕获并独占该粘贴，避免输入框把它当文本插入
+            try { ev.preventDefault(); ev.stopPropagation() } catch (e) {}
+            if (typeof FileReader === 'undefined') { patch({ insertHint: '浏览器不支持读取粘贴图片，请改用图库按钮上传' }); return }
+            const reader = new FileReader()
+            reader.onload = () => {
+              const dataUrl = String(reader.result || '')
+              const comma = dataUrl.indexOf(',')
+              const b64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl
+              host.call('media-save', { name: file.name || '粘贴图片', base64: b64 }).then(async (res) => {
+                await refresh()
+                if (res && res.ok && res.entry && res.entry.ref) {
+                  patch({ openPanel: 'gallery', autoVisionRef: res.entry.ref, insertHint: '已粘贴上传并打开识图 ✓' })
+                } else {
+                  patch({ insertHint: '粘贴上传失败: ' + (res && res.error ? res.error : '未知') })
+                }
+              }).catch(() => patch({ insertHint: '粘贴上传失败' }))
+            }
+            reader.onerror = () => patch({ insertHint: '粘贴图片读取失败' })
+            reader.readAsDataURL(file)
           } catch (e) {}
         }
-        try { window.addEventListener('paste', onPaste) } catch (e) {}
-        return () => { try { window.removeEventListener('paste', onPaste) } catch (e) {} }
+        try { window.addEventListener('paste', onPaste, true) } catch (e) {}
+        return () => { try { window.removeEventListener('paste', onPaste, true) } catch (e) {} }
       }, [])
       return null
     }
