@@ -447,17 +447,19 @@ return {
       const openSession = () => {
         try {
           const sessions = ctx.get('sessions')
-          if (!sessions || typeof sessions.openSubagent !== 'function') { patch({ insertHint: '当前页面不支持跳转子会话' }); return }
+          if (!sessions) { patch({ insertHint: '当前页面不支持跳转子会话' }); return }
           const parentId = st.rootSessionId || (agent.parentId || '')
-          const tryOpen = (mode) => {
-            sessions.openSubagent({ parentSessionId: parentId, childSessionId: agent.id, mode: mode })
-            return true
-          }
           const mode = agent.mode === 'one-shot' ? 'one-shot' : 'continuable'
-          try { tryOpen(mode) } catch (e) {
-            // 模式不符时用另一种模式重试一次
-            try { tryOpen(mode === 'continuable' ? 'one-shot' : 'continuable') } catch (e2) { patch({ insertHint: '打开会话失败' }) }
+          // 多重回退：直接打开会话页 → openSubagent（正确模式）→ openSubagent（另一模式）
+          const attempts = [
+            function () { sessions.open(agent.id) },
+            function () { sessions.openSubagent({ parentSessionId: parentId, childSessionId: agent.id, mode: mode }) },
+            function () { sessions.openSubagent({ parentSessionId: parentId, childSessionId: agent.id, mode: mode === 'one-shot' ? 'continuable' : 'one-shot' }) },
+          ]
+          for (const fn of attempts) {
+            try { fn(); return } catch (e) {}
           }
+          patch({ insertHint: '打开会话失败' })
         } catch (e) { patch({ insertHint: '打开会话失败' }) }
       }
       const goalLine = agent.isRoot && st.goal && st.goal.objective ? '🎯 ' + st.goal.objective : ''

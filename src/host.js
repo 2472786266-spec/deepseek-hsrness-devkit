@@ -473,8 +473,9 @@ return {
           parent = root
         }
         // followup 的 options 是必填：{ source, signal }（缺省会被拒绝）
-        const followupOptions = { source: { kind: 'user' }, signal: (typeof AbortController !== 'undefined' ? new AbortController().signal : undefined) }
-        const messageId = await subagents.followup(parent, agentId, [{ type: 'text', text: text }], followupOptions)
+        // 动态宿主域可能没有 AbortController → 鸭子类型 signal 兜底
+        const mkSignal = () => (typeof AbortController !== 'undefined' ? new AbortController().signal : { aborted: false, throwIfAborted: function () {}, addEventListener: function () {}, removeEventListener: function () {} })
+        const messageId = await subagents.followup(parent, agentId, [{ type: 'text', text: text }], { source: { kind: 'user' }, signal: mkSignal() })
         return { ok: true, messageId: s(messageId) }
       } catch (e) { return { ok: false, error: errText(e) } }
     })
@@ -796,8 +797,8 @@ return {
           if (!agents || !subagents) return { ok: false, error: '智能体服务不可用' }
           const parent = agents.get(s(pick(args, ['parentId']))) || agents.roots()[0]
           if (!parent) return { ok: false, error: '未找到主会话代理' }
-          const followupOptions = { source: { kind: 'user' }, signal: (typeof AbortController !== 'undefined' ? new AbortController().signal : undefined) }
-          const messageId = await subagents.followup(parent, s(pick(args, ['agentId'])), [{ type: 'text', text: s(pick(args, ['text'])) }], followupOptions)
+          const mkSignal = () => (typeof AbortController !== 'undefined' ? new AbortController().signal : { aborted: false, throwIfAborted: function () {}, addEventListener: function () {}, removeEventListener: function () {} })
+          const messageId = await subagents.followup(parent, s(pick(args, ['agentId'])), [{ type: 'text', text: s(pick(args, ['text'])) }], { source: { kind: 'user' }, signal: mkSignal() })
           return { ok: true, messageId: s(messageId) }
         } catch (e) { return { ok: false, error: errText(e) } }
       },
