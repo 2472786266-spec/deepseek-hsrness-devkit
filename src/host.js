@@ -517,12 +517,8 @@ return {
         }
         if (!parent) {
           // 反向定位真实直接父级（可能不属于当前根会话树）
-          const debugArr = []
-          parent = await findParentOf(agentId, debugArr)
-          if (!parent) {
-            const dbg = debugArr.length > 0 ? '（诊断: ' + debugArr.map((d) => d.pid.slice(0, 8) + (d.err ? '✗' + d.err.slice(0, 50) : '✓' + d.count)).join(', ') + '）' : ''
-            return { ok: false, error: '无法定位该智能体的直接父级会话（父级未激活或已失效）' + dbg }
-          }
+          parent = await findParentOf(agentId)
+          if (!parent) return { ok: false, error: '该智能体的父级会话已失效（历史遗留的孤儿会话），无法续发消息；请点「打开」查看其历史内容，或重新派生子智能体' }
         }
         // followup 的 options 是必填：{ source, signal }（缺省会被拒绝）
         // 动态宿主域可能没有 AbortController → 鸭子类型 signal 兜底
