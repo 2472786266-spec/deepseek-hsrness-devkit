@@ -9,13 +9,9 @@
 
 ## 📸 界面预览
 
-| 智能体监督 | 多模态图库 | 后台任务 |
-|---|---|---|
-| ![智能体](docs/screenshots/console-agents.png) | ![图库](docs/screenshots/console-media.png) | ![任务](docs/screenshots/console-jobs.png) |
-
-| 工作流监督 | 目标总览 |
+| 图库大弹层（输入框工具行 🖼 按钮） | 监督大弹层（会话标题栏 🧭 按钮） |
 |---|---|
-| ![工作流](docs/screenshots/console-workflows.png) | ![目标](docs/screenshots/console-goal.png) |
+| ![图库弹层](docs/screenshots/v4-gallery.png) | ![监督弹层](docs/screenshots/v4-agents.png) |
 
 ## ✨ 功能特性
 
