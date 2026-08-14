@@ -252,6 +252,7 @@ return {
       if (logBuf.length > 100) logBuf.shift()
     })
     // 实时令牌统计：包裹每次流式模型调用（借鉴 dsh-web-ui 的 live token stats 思路）
+    // v4.5：优先用适配器发出的 usage 块（真实 TokenUsage，含缓存读写），估算仅作流式进度兜底
     ctx.on('llm/stream', function (options, next) {
       let inputTokens = 0
       try {
@@ -271,9 +272,11 @@ return {
         async *[Symbol.asyncIterator]() {
           const t0 = now()
           let firstAt = 0
+          let realUsage = null
           try {
             for await (const chunk of src) {
               if (!firstAt) { firstAt = now(); rec.firstTokenMs = firstAt - t0 }
+              if (chunk && chunk.type === 'usage' && chunk.usage) realUsage = chunk.usage
               if (chunk && chunk.type === 'text-delta' && typeof chunk.text === 'string') {
                 rec.chars += chunk.text.length
                 rec.outputTokens = Math.max(1, Math.round(rec.chars / 3.5))
@@ -284,15 +287,19 @@ return {
             const end = now()
             rec.startedAt = t0
             rec.durationMs = end - t0
-            rec.tps = rec.durationMs > 0 ? Math.round((rec.outputTokens / rec.durationMs) * 1000) / 10 : 0
             rec.status = 'done'
-            usageTotals.input += rec.inputTokens
-            usageTotals.output += rec.outputTokens
+            const u = realUsage || {}
+            const inTok = n(u.inputTokens) || rec.inputTokens
+            const outTok = n(u.outputTokens) || rec.outputTokens
+            rec.tps = rec.durationMs > 0 ? Math.round((outTok / rec.durationMs) * 1000) / 10 : 0
+            usageTotals.input += inTok
+            usageTotals.output += outTok
             usageTotals.calls += 1
             if (!usageTotals.startedAt) usageTotals.startedAt = t0
             let win = 0
             try { win = await contextFor(rec.provider, rec.model) } catch (e) {}
-            usageLast = { provider: rec.provider, model: rec.model, inputTokens: rec.inputTokens, outputTokens: rec.outputTokens, firstTokenMs: rec.firstTokenMs, durationMs: rec.durationMs, tps: rec.tps, contextWindow: win, contextPct: win > 0 ? Math.min(100, Math.round(rec.inputTokens / win * 100)) : null, at: end }
+            const cacheRead = n(u.cacheReadTokens) || 0
+            usageLast = { provider: rec.provider, model: rec.model, inputTokens: inTok, outputTokens: outTok, cacheReadTokens: cacheRead, cacheWriteTokens: n(u.cacheWriteTokens) || 0, reasoningTokens: n(u.reasoningTokens) || 0, firstTokenMs: rec.firstTokenMs, durationMs: rec.durationMs, tps: rec.tps, contextWindow: win, contextPct: win > 0 ? Math.min(100, Math.round((inTok + cacheRead) / win * 100)) : null, at: end }
             usageCurrent = null
           }
         },

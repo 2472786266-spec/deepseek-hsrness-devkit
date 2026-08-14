@@ -214,7 +214,7 @@ return {
         el('div', { className: 'dk-panel-body' },
           tab === 'agents' ? el('div', null,
             totalsLine ? el('div', { className: 'dk-tip' }, totalsLine) : null,
-            agents.length === 0 ? el('div', { className: 'dk-empty' }, '当前没有已注册的智能体。') : agents.map((a) => el(AgentRow, { key: a.id, agent: a })),
+            agents.length === 0 ? el('div', { className: 'dk-empty' }, '当前没有已注册的智能体。') : agents.map((a) => el(AgentRow, { key: a.id, agent: a, st: st })),
           ) : tab === 'jobs' ? el('div', null,
             el('div', { className: 'dk-h3' }, '后台任务看板（按状态分列）'),
             (st.jobs || []).length === 0 ? el('div', { className: 'dk-empty' }, '当前没有后台任务。') : el('div', { className: 'dk-kanban' },
@@ -285,7 +285,7 @@ return {
       const j = props.j
       return el('div', { className: 'dk-kcard' },
         el('div', { className: 'dk-kid dk-mono' }, j.id),
-        el('div', { className: 'dk-kkind' }, j.kind || '任务'),
+        el('div', { className: 'dk-kkind' }, j.label || j.kind || '任务'),
         el('div', { className: 'dk-agentactions' },
           StatusBadge(j.status),
           (j.status === 'running' || j.status === 'idle') ? el('button', { className: 'dk-btn-sm dk-btn-danger', onClick: () => props.onKill(j.id) }, '结束') : null,
@@ -424,6 +424,7 @@ return {
 
     function AgentRow(props) {
       const agent = props.agent
+      const st = props.st || {}
       const [openMsg, setOpenMsg] = React.useState(false)
       const [text, setText] = React.useState('')
       const [busy, setBusy] = React.useState(false)
@@ -431,6 +432,23 @@ return {
       const canInterrupt = agent.status === 'running' && !agent.isRoot
       const canMessage = !agent.isRoot
       const label = agent.isRoot ? '★ 主会话' : (agent.label || '未命名')
+      const depth = Number(agent.depth) || 0
+      // 运行时长（基于状态快照时间）
+      let ageText = ''
+      if (agent.createdAt && st.updatedAt) {
+        const sec = Math.max(0, Math.round((st.updatedAt - agent.createdAt) / 1000))
+        if (sec >= 3600) ageText = Math.floor(sec / 3600) + 'h' + Math.floor((sec % 3600) / 60) + 'm'
+        else if (sec >= 60) ageText = Math.floor(sec / 60) + 'm' + (sec % 60) + 's'
+        else ageText = sec + 's'
+      }
+      const openSession = () => {
+        try {
+          const sessions = ctx.get('sessions')
+          if (!sessions || typeof sessions.openSubagent !== 'function') { patch({ insertHint: '当前页面不支持跳转子会话' }); return }
+          sessions.openSubagent({ parentSessionId: st.rootSessionId || (agent.parentId || ''), childSessionId: agent.id, mode: 'continuable' })
+        } catch (e) { patch({ insertHint: '打开会话失败' }) }
+      }
+      const goalLine = agent.isRoot && st.goal && st.goal.objective ? '🎯 ' + st.goal.objective : ''
       const send = async () => {
         if (!text.trim()) return
         setBusy(true); setNote('发送中…')
@@ -447,13 +465,17 @@ return {
           setNote(res && res.ok ? '已发出打断 ✓' : '失败: ' + (res && res.error ? res.error : '未知'))
         } catch (e) { setNote('打断失败') }
       }
-      return el('div', { className: 'dk-agentrow' },
+      return el('div', { className: 'dk-agentrow', style: depth > 0 ? { marginLeft: (depth * 14) + 'px' } : null },
+        depth > 0 ? el('span', { className: 'dk-mono dk-depth', title: '深度 ' + depth }, '└'.repeat(1) + '─'.repeat(Math.min(depth, 6))) : null,
         StatusBadge(agent.status),
         el('div', { className: 'dk-agentname', title: agent.id }, label, el('span', { className: 'dk-mono' }, ' ' + String(agent.id || '').slice(0, 12))),
+        ageText ? el('span', { className: 'dk-tip dk-age', title: '运行时长' }, ageText) : null,
         el('div', { className: 'dk-agentactions' },
+          !agent.isRoot ? el('button', { className: 'dk-btn-sm', title: '跳转到该智能体的会话页面', onClick: openSession }, '打开') : null,
           canMessage ? el('button', { className: 'dk-btn-sm dk-btn-primary', onClick: () => { setOpenMsg(!openMsg); setNote('') } }, openMsg ? '收起' : '发消息') : null,
           canInterrupt ? el('button', { className: 'dk-btn-sm dk-btn-danger', onClick: stop }, '打断') : null,
         ),
+        goalLine ? el('div', { className: 'dk-tip dk-goalline' }, goalLine) : null,
         openMsg ? el('div', { className: 'dk-msgform' },
           el('textarea', { className: 'dk-input dk-textarea', rows: 2, placeholder: '发送给该智能体的新消息…（作为它的下一轮）', value: text, onChange: (ev) => setText(ev.target.value) }),
           el('div', { className: 'dk-msgrow' },
@@ -632,11 +654,26 @@ return {
     function UsageLine() {
       const s = useStore()
       const u = s.state ? s.state.usage : null
-      const ut = u ? (u.current && u.current.status === 'streaming' ? u.current : u.last) : null
-      const pct = (ut && ut.contextPct !== null && ut.contextPct !== undefined) ? ut.contextPct : (u && u.last && u.last.contextPct !== null && u.last.contextPct !== undefined ? u.last.contextPct : null)
-      if (!ut) return el('div', { className: 'dk-usage' }, '⚡ 令牌统计待首次生成')
+      const cur = u && u.current
+      const last = u && u.last
+      // 流式中：显示实时字符进度
+      if (cur && cur.status === 'streaming') {
+        return el('div', { className: 'dk-usage' },
+          '⚡ 生成中 · 已输出 ' + cur.chars + ' 字符' + (cur.model ? ' · ' + cur.model : ''),
+        )
+      }
+      if (!last) return el('div', { className: 'dk-usage' }, '⚡ 令牌统计待首次生成')
+      const parts = ['⚡ 出 ' + last.outputTokens + ' tok · ' + (last.durationMs ? (last.durationMs / 1000).toFixed(1) + 's' : '') + ' · ' + last.tps + ' T/s']
+      if (last.cacheReadTokens && last.cacheReadTokens > 0) {
+        const hit = Math.round(last.cacheReadTokens / Math.max(1, last.inputTokens + last.cacheReadTokens) * 100)
+        parts.push('缓存命中 ' + hit + '%')
+      }
+      if (last.contextPct !== null && last.contextPct !== undefined) parts.push('上下文 ' + last.contextPct + '%')
+      const pct = (last.contextPct !== null && last.contextPct !== undefined) ? last.contextPct : 0
+      const barCls = pct > 90 ? ' dk-ctxbar-red' : pct > 70 ? ' dk-ctxbar-amber' : ''
       return el('div', { className: 'dk-usage' },
-        '⚡ ' + ut.model + ' · 出 ' + ut.outputTokens + ' tok · ' + (ut.durationMs ? (ut.durationMs / 1000).toFixed(1) + 's' : '生成中') + ' · ' + ut.tps + ' T/s · 入 ' + ut.inputTokens + ' tok' + (pct !== null ? ' · 上下文 ' + pct + '%' : ''),
+        parts.join(' · '),
+        pct > 0 ? el('span', { className: 'dk-ctxbar', title: '上下文占用（含缓存读取）' }, el('span', { className: 'dk-ctxbar-fill' + barCls, style: { width: Math.min(100, pct) + '%' } })) : null,
       )
     }
 
@@ -658,7 +695,7 @@ return {
         el('button', { className: 'dk-btn-sm', onClick: () => patch({ openPanel: 'agents' }) }, '🧭 监督'),
         el('button', { className: 'dk-btn-sm', onClick: () => patch({ workbench: !s.workbench }) }, '🧰 工作台'),
         el('button', { className: 'dk-btn-sm', onClick: refresh, title: '立即刷新状态' }, '刷新'),
-        el('span', { className: 'dk-ver', title: '开发增强套件版本（看不到新功能时请刷新页面）' }, 'v4.4'),
+        el('span', { className: 'dk-ver', title: '开发增强套件版本（看不到新功能时请刷新页面）' }, 'v4.5'),
         s.insertHint ? el('span', { className: 'dk-note' }, s.insertHint) : null,
         s.lastError ? el('span', { className: 'dk-note' }, '⚠ ' + s.lastError) : null,
       )
@@ -692,7 +729,7 @@ return {
     function SelfCard() {
       const s = useStore()
       return el('div', { className: 'dk-self' },
-        el('div', { className: 'dk-self-title' }, '✅ 开发增强套件 v4.4 已激活（粘贴链路修复版）'),
+        el('div', { className: 'dk-self-title' }, '✅ 开发增强套件 v4.5 已激活（令牌统计真实化 + 智能体体验增强）'),
         el('div', { className: 'dk-self-line' }, '🧰 工作台（侧边栏底部+状态条）· 🖼 图库（Ctrl+Shift+G）· 🧭 监督（Ctrl+Shift+S）· 全局粘贴识图 · Git 提交 · ⚡ 令牌统计+上下文占用 · 🛰 视觉模型管理在设置页'),
         el('div', { className: 'dk-tip' }, '打开「设置 → 开发增强套件」配置视觉模型与皮肤。'),
       )
@@ -815,7 +852,7 @@ return {
     styles.insert(".dk-goal{border:1px solid rgba(79,140,255,.35);background:rgba(79,140,255,.07);border-radius:10px;padding:10px 12px}.dk-goal-obj{font-weight:600;margin-bottom:4px}.dk-goal-meta{font-size:12px;color:#6b7280}.dk-goal-block{font-size:12px;color:#ef4444;margin-top:4px}")
     styles.insert(".dk-vision{border:1px solid rgba(79,140,255,.35);background:rgba(79,140,255,.07);border-radius:10px;padding:10px 12px;margin:8px 0;display:flex;flex-direction:column;gap:6px}.dk-vision-result{width:100%;min-height:96px;resize:vertical;font-size:12px}.dk-manage-row{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:4px 0}.dk-manage-in{flex:1;min-width:130px}")
     styles.insert(".dk-dock{display:flex;gap:8px;align-items:center;padding:4px 8px;border-radius:8px;background:rgba(110,120,140,.06);border:1px solid rgba(110,120,140,.15);flex-wrap:wrap;font-size:12px}.dk-dockstats{color:#6b7280}.dk-ver{font-size:10px;color:#9aa0aa;font-family:ui-monospace,Consolas,monospace}")
-    styles.insert(".dk-usage{font-size:11px;color:#4f8cff;padding:2px 4px;white-space:nowrap}.dk-toolbtn{display:inline-flex;align-items:center;gap:4px;background:transparent;border:none;color:inherit;cursor:pointer;font:inherit;padding:4px 8px;border-radius:8px}.dk-toolbtn:hover{background:rgba(110,120,140,.14)}.dk-toolbtn-on{background:rgba(79,140,255,.18);color:#4f8cff}.dk-toolbtn-count{font-size:10px;color:#8a8f98}")
+    styles.insert(".dk-usage{font-size:11px;color:#4f8cff;padding:2px 4px;white-space:nowrap}.dk-ctxbar{display:inline-block;width:70px;height:6px;border-radius:3px;background:rgba(110,120,140,.25);margin-left:6px;vertical-align:middle;overflow:hidden}.dk-ctxbar-fill{display:block;height:100%;background:#22c55e}.dk-ctxbar-amber{background:#f59e0b}.dk-ctxbar-red{background:#ef4444}.dk-depth{flex:none;color:#9aa0aa}.dk-age{flex:none;min-width:44px}.dk-goalline{flex-basis:100%;margin:0}.dk-toolbtn{display:inline-flex;align-items:center;gap:4px;background:transparent;border:none;color:inherit;cursor:pointer;font:inherit;padding:4px 8px;border-radius:8px}.dk-toolbtn:hover{background:rgba(110,120,140,.14)}.dk-toolbtn-on{background:rgba(79,140,255,.18);color:#4f8cff}.dk-toolbtn-count{font-size:10px;color:#8a8f98}")
     styles.insert(".dk-badge{background:#ef4444;color:#fff;border-radius:9px;padding:0 7px;font-size:11px;line-height:16px}.dk-settings{display:flex;flex-direction:column;gap:4px;padding:4px 0}")
     styles.insert(".dk-self{border:1px solid rgba(79,140,255,.35);background:rgba(79,140,255,.07);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:6px}.dk-self-title{font-weight:700}.dk-self-line{font-size:12px;color:#6b7280}")
     styles.insert("@media (prefers-color-scheme: dark){.dk-panel{background:#1e2127;color:#e6e6e6;border-color:rgba(140,150,170,.3)}.dk-kcard{background:#232730;border-color:rgba(140,150,170,.25)}.dk-empty,.dk-tip,.dk-media-meta,.dk-dockstats,.dk-log,.dk-status,.dk-toolbtn-count{color:#8b93a1}.dk-note{color:#fbbf24}}")
