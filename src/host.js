@@ -191,7 +191,14 @@ return {
       if (!subagents) return null
       const hit = parentCache.get(childId)
       if (hit && now() - hit.at < 8000) return hit.parent
-      const candidates = []
+      // 探针 1：子智能体 Agent 对象自身是否暴露父级字段
+      try {
+        const child = agents ? agents.get(childId) : undefined
+        if (child) {
+          if (debugArr) {
+            let keys = ''\n            try { keys = String(Object.keys(child).slice(0, 25).join(',')) } catch (e) { keys = 'keys-err' }\n            debugArr.push({ pid: 'SELF-keys', found: false, count: -2, err: keys.slice(0, 180) })\n          }
+          const pp = s(pick(child, ['parentSessionId', 'parentId'])) || s(pick(child, ['parent']))
+          if (pp) {\n            const pAgent = agents.get(pp)\n            if (pAgent) { parentCache.set(childId, { parent: pAgent, at: now() }); return pAgent }\n            if (debugArr) debugArr.push({ pid: 'SELF-parent-cold:' + pp.slice(0, 20), found: false, count: -3, err: '' })\n          }\n        }\n      } catch (e) {}\n      const candidates = []
       if (agents) {
         try { const ls = agents.list(); if (Array.isArray(ls)) candidates.push(...ls) } catch (e) {}
         try { const roots = agents.roots(); if (roots && roots[0]) candidates.push(roots[0]) } catch (e) {}
