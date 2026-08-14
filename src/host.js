@@ -502,8 +502,9 @@ return {
     const gitRunAt = async (repoPath, argsStr) => {
       if (!shell) return { out: '', err: '', code: -1 }
       try {
-        // 不吞错误：spawn 失败时 stderr 保留真实原因
-        const command = '& git -C ' + psQuote(repoPath) + ' ' + argsStr + ' 2>&1'
+        // DSH 进程注入了不完整的 GIT_CONFIG_* 环境变量（缺 KEY_0），git 启动即报
+        // "missing config key GIT_CONFIG_KEY_0"；执行前先清除这三个变量
+        const command = 'Remove-Item Env:GIT_CONFIG_COUNT -ErrorAction SilentlyContinue; Remove-Item Env:GIT_CONFIG_VALUE_0 -ErrorAction SilentlyContinue; Remove-Item Env:GIT_CONFIG_KEY_0 -ErrorAction SilentlyContinue; & git -C ' + psQuote(repoPath) + ' ' + argsStr + ' 2>&1'
         const spec = shell.resolve({ command: command })
         const res = await shell.run(spec)
         const t = (v) => (v && typeof v === 'object' && typeof v.text === 'string') ? v.text : s(v)
@@ -536,7 +537,7 @@ return {
         const errOut = (r.err || '').trim()
         if (out.indexOf('fatal: not a git repository') >= 0 || out.indexOf('not a git repo') >= 0) return { ok: false, error: '该路径不是有效的 git 仓库' }
         if (out.indexOf('fatal:') >= 0) return { ok: false, error: out.split(/\r?\n/).find((x) => x.indexOf('fatal:') >= 0) || 'git 执行失败' }
-        // git 命令失败/被沙箱拒绝时优雅降级：分支名来自 .git/HEAD，变更列表显示原因
+        // git 命令失败时优雅降级：分支名来自 .git/HEAD，变更列表显示原因
         const gitBlocked = !out.trim() && r.code !== 0
         const branch = gitBlocked ? await branchFromHead(repo.path) : ''
         const lines = out.split(/\r?\n/).map((x) => x.trim()).filter((x) => x)
@@ -551,7 +552,8 @@ return {
           const path = ln.slice(3)
           entries.push({ x: x, y: y, path: path, staged: x !== ' ' && x !== '?', unstaged: y !== ' ', untracked: x === '?' })
         }
-        const note = gitBlocked ? 'git 命令不可用（当前会话沙箱禁止执行外部程序' + (errOut ? '：' + errOut : '') + '）；分支名来自 .git/HEAD，暂存/丢弃等操作暂不可用' : ''
+        const errBrief = errOut.split(/\r?\n/).find((x) => x.indexOf('error:') >= 0 || x.indexOf('fatal:') >= 0) || errOut.slice(0, 120)
+        const note = gitBlocked ? 'git 命令不可用（' + (errBrief || '未知原因') + '）；分支名来自 .git/HEAD，暂存/丢弃等操作暂不可用' : ''
         return { ok: true, branch: branch, entries: entries, repo: repo, repos: repos, note: note }
       } catch (e) { return { ok: false, error: errText(e) } }
     })
@@ -571,7 +573,8 @@ return {
         const r = await gitRunAt(repoPath, argStr)
         const out = r.out || ''
         const errOut = (r.err || '').trim()
-        if (r.code !== 0 && !out.trim()) return { ok: false, error: 'git 命令不可用（会话沙箱禁止执行外部程序' + (errOut ? '：' + errOut : '') + '）' }
+        const errBrief = errOut.split(/\r?\n/).find((x) => x.indexOf('error:') >= 0 || x.indexOf('fatal:') >= 0) || errOut.slice(0, 120)
+        if (r.code !== 0 && !out.trim()) return { ok: false, error: 'git 命令不可用（' + (errBrief || '未知原因') + '）' }
         if (out.indexOf('fatal:') >= 0 || out.indexOf('error:') >= 0) return { ok: false, error: out.split(/\r?\n/).find((x) => x.indexOf('fatal:') >= 0 || x.indexOf('error:') >= 0) || out.slice(0, 200) }
         return { ok: true, op: op }
       } catch (e) { return { ok: false, error: errText(e) } }
