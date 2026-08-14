@@ -184,6 +184,32 @@ return {
     }
 
     const agentIdOf = (a) => { try { return s(pick(a, ['id', 'sessionId'])) } catch (e) { return '' } }
+    // 父级定位缓存：listDescendants 只覆盖当前根会话树；live 注册表里的子智能体可能属于其他父级
+    // 行动时用 listChildren 反查真实直接父级（8 秒 TTL）
+    const parentCache = new Map()
+    async function findParentOf(childId) {
+      if (!subagents) return null
+      const hit = parentCache.get(childId)
+      if (hit && now() - hit.at < 8000) return hit.parent
+      const candidates = []
+      if (agents) {
+        try { const ls = agents.list(); if (Array.isArray(ls)) candidates.push(...ls) } catch (e) {}
+        try { const roots = agents.roots(); if (roots && roots[0]) candidates.push(roots[0]) } catch (e) {}
+      }
+      for (const c of candidates) {
+        const pid = agentIdOf(c)
+        if (!pid || pid === childId) continue
+        try {
+          const children = await subagents.listChildren(pid)
+          if (children && Array.isArray(children) && children.some((ch) => s(pick(ch, ['id', 'sessionId'])) === childId)) {
+            parentCache.set(childId, { parent: c, at: now() })
+            return c
+          }
+        } catch (e) {}
+      }
+      parentCache.set(childId, { parent: null, at: now() })
+      return null
+    }
 
     ctx.on('agent/created', (payload) => {
       const agent = payload && payload.agent
@@ -468,9 +494,11 @@ return {
         let parent = undefined
         if (parentId) {
           parent = agents.get(parentId)
-          if (!parent) return { ok: false, error: '该智能体的直接父级当前离线，无法投递（待其唤醒后重试）' }
-        } else {
-          parent = root
+        }
+        if (!parent) {
+          // 反向定位真实直接父级（可能不属于当前根会话树）
+          parent = await findParentOf(agentId)
+          if (!parent) return { ok: false, error: '无法定位该智能体的直接父级会话（父级未激活或已失效）' }
         }
         // followup 的 options 是必填：{ source, signal }（缺省会被拒绝）
         // 动态宿主域可能没有 AbortController → 鸭子类型 signal 兜底
@@ -482,15 +510,24 @@ return {
     harness.handle('agent-interrupt', async (args) => {
       try {
         if (!agents || !subagents) return { ok: false, error: '智能体服务不可用' }
-        const authority = agents.roots()[0]
-        if (!authority) return { ok: false, error: '未找到授权代理' }
         const agentId = s(pick(args, ['agentId']))
         if (!agentId) return { ok: false, error: '目标为空' }
-        const rootId = s(pick(authority, ['id', 'sessionId']))
-        if (agentId === rootId) return { ok: false, error: '不能打断主会话' }
-        // authority 必须是 { kind: 'ancestor', agent }（根 Agent 是所有后代的上游）
+        // authority 必须是 live 祖先：优先用直接父级（findParentOf），否则用根 Agent
+        let authority = await findParentOf(agentId)
+        if (!authority) {
+          authority = agents.roots()[0]
+          if (!authority) return { ok: false, error: '未找到授权代理' }
+        }
         subagents.interrupt(agentId, { kind: 'ancestor', agent: authority })
         return { ok: true }
+      } catch (e) { return { ok: false, error: errText(e) } }
+    })
+    harness.handle('agent-parent', async (args) => {
+      try {
+        const agentId = s(pick(args, ['agentId']))
+        if (!agentId) return { ok: false, error: '目标为空' }
+        const parent = await findParentOf(agentId)
+        return { ok: true, parentId: parent ? agentIdOf(parent) : '' }
       } catch (e) { return { ok: false, error: errText(e) } }
     })
     harness.handle('job-kill', async (args) => {
@@ -795,8 +832,9 @@ return {
       execute: async (args) => {
         try {
           if (!agents || !subagents) return { ok: false, error: '智能体服务不可用' }
-          const parent = agents.get(s(pick(args, ['parentId']))) || agents.roots()[0]
-          if (!parent) return { ok: false, error: '未找到主会话代理' }
+          let parent = agents.get(s(pick(args, ['parentId'])))
+          if (!parent) parent = await findParentOf(s(pick(args, ['agentId'])))
+          if (!parent) return { ok: false, error: '无法定位该智能体的直接父级会话' }
           const mkSignal = () => (typeof AbortController !== 'undefined' ? new AbortController().signal : { aborted: false, throwIfAborted: function () {}, addEventListener: function () {}, removeEventListener: function () {} })
           const messageId = await subagents.followup(parent, s(pick(args, ['agentId'])), [{ type: 'text', text: s(pick(args, ['text'])) }], { source: { kind: 'user' }, signal: mkSignal() })
           return { ok: true, messageId: s(messageId) }
@@ -816,8 +854,9 @@ return {
       execute: async (args) => {
         try {
           if (!agents || !subagents) return { ok: false, error: '智能体服务不可用' }
-          const authority = agents.roots()[0]
-          if (!authority) return { ok: false, error: '未找到主会话代理' }
+          let authority = await findParentOf(s(pick(args, ['agentId'])))
+          if (!authority) authority = agents.roots()[0]
+          if (!authority) return { ok: false, error: '未找到授权代理' }
           subagents.interrupt(s(pick(args, ['agentId'])), { kind: 'ancestor', agent: authority })
           return { ok: true }
         } catch (e) { return { ok: false, error: errText(e) } }

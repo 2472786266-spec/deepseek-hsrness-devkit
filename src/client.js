@@ -444,22 +444,28 @@ return {
         else if (sec >= 60) ageText = Math.floor(sec / 60) + 'm' + (sec % 60) + 's'
         else ageText = sec + 's'
       }
-      const openSession = () => {
+      const openSession = async () => {
         try {
           const sessions = ctx.get('sessions')
           if (!sessions) { patch({ insertHint: '当前页面不支持跳转子会话' }); return }
-          const parentId = st.rootSessionId || (agent.parentId || '')
           const mode = agent.mode === 'one-shot' ? 'one-shot' : 'continuable'
-          // 多重回退：直接打开会话页 → openSubagent（正确模式）→ openSubagent（另一模式）
+          // 真实直接父级：优先用状态里的 parentId，缺失时向宿主反查（agent-parent）
+          let parentId = st.rootSessionId || (agent.parentId || '')
+          if (!agent.parentId) {
+            try {
+              const res = await host.call('agent-parent', { agentId: agent.id })
+              if (res && res.ok && res.parentId) parentId = res.parentId
+            } catch (e) {}
+          }
           const attempts = [
-            function () { sessions.open(agent.id) },
             function () { sessions.openSubagent({ parentSessionId: parentId, childSessionId: agent.id, mode: mode }) },
+            function () { sessions.open(agent.id) },
             function () { sessions.openSubagent({ parentSessionId: parentId, childSessionId: agent.id, mode: mode === 'one-shot' ? 'continuable' : 'one-shot' }) },
           ]
           for (const fn of attempts) {
             try { fn(); return } catch (e) {}
           }
-          patch({ insertHint: '打开会话失败' })
+          patch({ insertHint: '打开会话失败（父级: ' + parentId + '）' })
         } catch (e) { patch({ insertHint: '打开会话失败' }) }
       }
       const goalLine = agent.isRoot && st.goal && st.goal.objective ? '🎯 ' + st.goal.objective : ''
