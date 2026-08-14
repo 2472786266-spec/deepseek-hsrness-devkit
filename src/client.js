@@ -550,6 +550,9 @@ return {
         try { if (typeof window !== 'undefined' && window.localStorage) window.localStorage.setItem('dsh-devkit-skin', v) } catch (e) {}
       }
       const decoded = (st.media || []).filter((m) => m.realPath).length
+      const u = st.usage
+      const ut = u ? (u.current && u.current.status === 'streaming' ? u.current : u.last) : null
+      const usageFoot = ut ? ' · ⚡ ' + ut.model + ' 出 ' + ut.outputTokens + ' tok' + (ut.durationMs ? '/' + (ut.durationMs / 1000).toFixed(1) + 's ' + ut.tps + 'T/s' : ' 生成中') + ' · 入 ' + ut.inputTokens + ' tok' : ''
       return el('div', { className: 'dk-console', style: style, onMouseMove: onMove, onMouseUp: onUp },
         el('div', { className: 'dk-resize', onMouseDown: onResizeDown, title: '拖拽调整宽度' }),
         el('div', { className: 'dk-head', onMouseDown: onHeadDown },
@@ -567,7 +570,7 @@ return {
         ),
         el('div', { className: 'dk-foot' },
           s.insertHint ? el('span', { className: 'dk-note' }, s.insertHint + '  ·  ') : null,
-          s.lastError ? '⚠ ' + s.lastError : (s.connected ? '已连接 · 每 2.5s 自动刷新 · 图库 ' + ((st.media || []).length) + ' 项（' + decoded + ' 已解码）' : '连接中…'),
+          s.lastError ? '⚠ ' + s.lastError : (s.connected ? '已连接 · 每 2.5s 自动刷新 · 图库 ' + ((st.media || []).length) + ' 项（' + decoded + ' 已解码）' + usageFoot : '连接中…'),
         ),
       )
     }
@@ -596,7 +599,7 @@ return {
       const total = (st.agents || []).length
       const u = st.usage
       const ut = u ? (u.current && u.current.status === 'streaming' ? u.current : u.last) : null
-      const usageText = ut ? '⚡ ' + ut.model + ' · 出 ' + ut.outputTokens + ' tok · ' + (ut.durationMs ? (ut.durationMs / 1000).toFixed(1) + 's' : '生成中') + ' · ' + ut.tps + ' T/s · 入 ' + ut.inputTokens + ' tok' : ''
+      const usageText = ut ? '⚡ ' + ut.model + ' · 出 ' + ut.outputTokens + ' tok · ' + (ut.durationMs ? (ut.durationMs / 1000).toFixed(1) + 's' : '生成中') + ' · ' + ut.tps + ' T/s · 入 ' + ut.inputTokens + ' tok' : '⚡ 令牌统计：待首次生成'
       React.useEffect(() => {
         if (s.pendingInsert) {
           if (props && props.inputActions) {
@@ -610,7 +613,7 @@ return {
       }, [s.pendingInsert])
       return el('div', { className: 'dk-dock' },
         el('span', { className: 'dk-dockstats' }, '🧭 智能体 ' + total + ' · 运行 ' + running + ' · 任务 ' + (st.jobs ? st.jobs.length : 0) + ' · 图库 ' + (st.media ? st.media.length : 0)),
-        usageText ? el('span', { className: 'dk-dockusage', title: '实时令牌统计（本会话进程累计）' }, usageText) : null,
+        usageText ? el('span', { className: 'dk-dockusage' + (ut ? '' : ' dk-dockusage-idle'), title: '实时令牌统计（本会话进程累计）' }, usageText) : null,
         el('button', { className: 'dk-btn-sm', onClick: () => patch({ open: true, tab: 'agents' }) }, '控制台'),
         el('button', { className: 'dk-btn-sm', onClick: () => patch({ open: true, tab: 'media' }) }, '图库'),
         el('button', { className: 'dk-btn-sm', onClick: refresh, title: '立即刷新状态' }, '刷新'),
@@ -668,7 +671,7 @@ return {
     styles.insert(".dk-self{border:1px solid rgba(79,140,255,.35);background:rgba(79,140,255,.07);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:6px}.dk-self-title{font-weight:700}.dk-self-line{font-size:12px;color:#6b7280}.dk-self-row{display:flex;gap:8px;margin-top:2px}")
     styles.insert(".dk-select{background:rgba(110,120,140,.08);border:1px solid rgba(110,120,140,.3);border-radius:6px;padding:5px 8px;color:inherit;font:inherit;max-width:220px}.dk-vision{border:1px solid rgba(79,140,255,.35);background:rgba(79,140,255,.07);border-radius:10px;padding:10px 12px;margin:8px 0;display:flex;flex-direction:column;gap:6px}")
     styles.insert(".dk-vision-result{width:100%;min-height:96px;resize:vertical;font-size:12px}.dk-manage-row{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:4px 0}.dk-manage-in{flex:1;min-width:130px}@media (prefers-color-scheme: dark){.dk-console{background:#1e2127;color:#e6e6e6;border-color:rgba(140,150,170,.3)}.dk-foot,.dk-empty,.dk-tip,.dk-media-meta,.dk-self-line,.dk-goal-meta,.dk-log,.dk-dockstats,.dk-status{color:#8b93a1}.dk-note{color:#fbbf24}}")
-    styles.insert(".dk-resize{position:absolute;left:0;top:38%;width:8px;height:64px;cursor:ew-resize;background:rgba(110,120,140,.3);border-radius:0 8px 8px 0;z-index:20}.dk-resize:hover{background:#4f8cff}.dk-skinselect{max-width:76px;font-size:12px;padding:4px 6px}.dk-dockusage{margin-left:8px;font-size:11px;color:#4f8cff;white-space:nowrap}")
+    styles.insert(".dk-resize{position:absolute;left:0;top:38%;width:8px;height:64px;cursor:ew-resize;background:rgba(110,120,140,.3);border-radius:0 8px 8px 0;z-index:20}.dk-resize:hover{background:#4f8cff}.dk-skinselect{max-width:76px;font-size:12px;padding:4px 6px}.dk-dockusage{margin-left:8px;font-size:11px;color:#4f8cff;white-space:nowrap}.dk-dockusage-idle{color:#9aa0aa}")
     styles.insert(".dk-kanban{display:flex;gap:10px;align-items:flex-start}.dk-kcol{flex:1;min-width:0;background:rgba(110,120,140,.07);border:1px solid rgba(110,120,140,.18);border-radius:8px;padding:8px}.dk-khead{font-size:12px;font-weight:700;margin-bottom:6px}.dk-kcard{background:#ffffff;border:1px solid rgba(110,120,140,.2);border-radius:8px;padding:8px;margin-bottom:6px;box-shadow:0 1px 3px rgba(0,0,0,.06)}")
     styles.insert(".dk-kid{font-size:11px;color:#6b7280;word-break:break-all}.dk-kkind{font-size:12px;margin:2px 0 6px;font-weight:600}.dk-scmrow{display:flex;align-items:center;gap:8px;padding:5px 4px;border-top:1px solid rgba(110,120,140,.15)}.dk-scmflag{width:20px;font-size:11px;color:#b45309}.dk-scmname{flex:1;min-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}")
     styles.insert(".dk-filepath{flex:1;min-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:#6b7280}.dk-filetable{max-height:260px;overflow:auto;border:1px solid rgba(110,120,140,.2);border-radius:8px;margin-top:6px}.dk-filerow{display:flex;align-items:center;gap:8px;padding:4px 8px;cursor:pointer;border-top:1px solid rgba(110,120,140,.1)}")
