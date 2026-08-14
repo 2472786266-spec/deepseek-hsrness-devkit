@@ -502,10 +502,12 @@ return {
     const gitRunAt = async (repoPath, argsStr) => {
       if (!shell) return { stdout: '' }
       try {
-        const command = '$ErrorActionPreference = "SilentlyContinue"; $out = (& git -C ' + psQuote(repoPath) + ' ' + argsStr + ') 2>&1 | ForEach-Object { $_.ToString() }; [string]::Join([Environment]::NewLine, $out); exit 0'
+        // 注意：DSH shell 的 stdout 是 CollectedOutput 对象 {text, truncated}，不是字符串；
+        // 且 PowerShell -Command 模式下「表达式结果 + exit 0」不落输出，必须让 git 原生输出直接进采集器。
+        const command = '$ErrorActionPreference = "SilentlyContinue"; & git -C ' + psQuote(repoPath) + ' ' + argsStr + ' 2>&1'
         const spec = shell.resolve({ command: command })
         const res = await shell.run(spec)
-        // 归一化：shell 服务返回的 stdout 可能是字符串 / 字符串数组 / 对象数组
+        // 归一化：兼容字符串 / CollectedOutput {text} / 字符串数组 / 对象数组
         const normOut = (v) => {
           if (v === undefined || v === null) return ''
           if (typeof v === 'string') return v
@@ -517,7 +519,7 @@ return {
             }).join('\n')
           }
           if (typeof v === 'object') {
-            const inner = pick(v, ['stdout', 'output', 'out', 'data', 'text', 'line'])
+            const inner = pick(v, ['text', 'stdout', 'output', 'out', 'data', 'line'])
             if (inner !== undefined && inner !== null && inner !== v) return normOut(inner)
             return JSON.stringify(v)
           }
