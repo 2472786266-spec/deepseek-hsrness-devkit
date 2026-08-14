@@ -76,6 +76,7 @@ async function main() {
   }
   // 打开：记录 URL，点击第一个子智能体的「打开」，观察导航
   const hrefBefore = await ev(`location.href`)
+  const titleBefore = await ev(`document.title`)
   const clickOpen = await ev(`(() => {
     const rows = Array.from(document.querySelectorAll('.dk-workbench .dk-agentrow'))
     const target = rows.find((r) => Array.from(r.querySelectorAll('.dk-btn-sm')).some((b) => b.textContent === '打开'))
@@ -85,9 +86,11 @@ async function main() {
     return 'clicked'
   })()`)
   console.log('CLICK-OPEN:', clickOpen)
-  await sleep(2000)
+  await sleep(2500)
   const hrefAfter = await ev(`location.href`)
+  const titleAfter = await ev(`document.title`)
   console.log('OPEN-NAVIGATED:', hrefBefore !== hrefAfter ? 'YES (' + hrefAfter.slice(0, 90) + ')' : 'NO (href unchanged)')
+  console.log('TITLE-CHANGED:', titleBefore !== titleAfter ? 'YES: "' + titleAfter.slice(0, 60) + '"' : 'NO: "' + titleAfter.slice(0, 60) + '"')
   console.log('OPEN-HINT:', await ev(`(() => { const n = document.querySelector('.dk-dock .dk-note'); return n ? n.textContent.slice(0, 240) : '(无提示)' })()`))
   // 导航回原会话
   if (hrefBefore !== hrefAfter) {
