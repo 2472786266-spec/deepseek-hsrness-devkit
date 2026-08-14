@@ -720,7 +720,7 @@ return {
         el('button', { className: 'dk-btn-sm', onClick: () => patch({ openPanel: 'agents' }) }, '🧭 监督'),
         el('button', { className: 'dk-btn-sm', onClick: () => patch({ workbench: !s.workbench }) }, '🧰 工作台'),
         el('button', { className: 'dk-btn-sm', onClick: refresh, title: '立即刷新状态' }, '刷新'),
-        el('span', { className: 'dk-ver', title: '开发增强套件版本（看不到新功能时请刷新页面）' }, 'v4.7'),
+        el('span', { className: 'dk-ver', title: '开发增强套件版本（看不到新功能时请刷新页面）' }, 'v4.8'),
         s.insertHint ? el('span', { className: 'dk-note' }, s.insertHint) : null,
         s.lastError ? el('span', { className: 'dk-note' }, '⚠ ' + s.lastError) : null,
       )
@@ -888,5 +888,7 @@ return {
     styles.insert(".dk-workbench{position:fixed;left:288px;top:8px;bottom:8px;width:min(440px,40vw);z-index:2147482900;display:flex;flex-direction:column;border-radius:14px;overflow:hidden;box-shadow:0 18px 60px rgba(0,0,0,.35);background:var(--dsw-alias-bg-layer-1,#ffffff);color:var(--dsw-alias-label-primary,#1b1d22);font:13px/1.5 -apple-system,'Segoe UI',Roboto,'Microsoft YaHei',sans-serif;border:1px solid var(--dsw-alias-border-l2,rgba(110,120,140,.28))}.dk-supervision{display:flex;flex-direction:column;flex:1;min-height:0}.dk-super-tabs{display:flex;align-items:center;gap:6px;padding:8px 10px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(110,120,140,.2));flex-wrap:wrap}")
     styles.insert(".dk-footbtn{display:inline-flex;align-items:center;gap:6px;background:transparent;border:none;color:inherit;cursor:pointer;font:inherit;padding:4px 8px;border-radius:8px}.dk-footbtn:hover{background:var(--dsw-alias-bg-layer-1,rgba(110,120,140,.14))}.dk-footbtn-on{background:color-mix(in srgb,var(--dsw-alias-brand-primary,#4f8cff) 18%,transparent);color:var(--dsw-alias-brand-primary,#4f8cff)}.dk-footicon{font-size:14px}.dk-footlabel{font-size:12px}")
     styles.insert(".dk-skin-night .dk-panel,.dk-skin-night .dk-workbench{background:#171a23;color:#dbe2ef;border-color:rgba(140,160,200,.25)}.dk-skin-ocean .dk-panel,.dk-skin-ocean .dk-workbench{background:#f5fbff;color:#0f2e3d;border-color:rgba(14,165,233,.3)}.dk-skin-forest .dk-panel,.dk-skin-forest .dk-workbench{background:#f6fdf8;color:#12321f;border-color:rgba(22,163,74,.3)}.dk-skin-sunset .dk-panel,.dk-skin-sunset .dk-workbench{background:#fff8f3;color:#3d1d0b;border-color:rgba(249,115,22,.3)}.dk-skin-graphite .dk-panel,.dk-skin-graphite .dk-workbench{background:#22262e;color:#e2e8f0;border-color:rgba(148,163,184,.3)}")
+    // ── 可读性覆盖（v4.8）：次要文字统一用主文字色 72% 深度，任何主题下保证对比度 ──
+    styles.insert(".dk-tip,.dk-empty,.dk-mono,.dk-status,.dk-dockstats,.dk-ver,.dk-media-meta,.dk-log,.dk-kid,.dk-goal-meta,.dk-fsize,.dk-filepath,.dk-scmflag,.dk-depth,.dk-age,.dk-toolbtn-count{color:color-mix(in srgb,var(--dsw-alias-label-primary,#1b1d22) 72%,transparent)!important;font-size:12px}.dk-tab{color:color-mix(in srgb,var(--dsw-alias-label-primary,#1b1d22) 78%,transparent)}.dk-note{color:var(--dsw-alias-state-warn-primary,#b45309)!important;font-weight:500}.dk-goalline{color:color-mix(in srgb,var(--dsw-alias-label-primary,#1b1d22) 88%,transparent)!important}.dk-h3{color:var(--dsw-alias-label-primary,#1b1d22)}.dk-panel-title{color:var(--dsw-alias-label-primary,#1b1d22)}")
   },
 }
