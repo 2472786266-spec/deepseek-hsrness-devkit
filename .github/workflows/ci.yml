@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  syntax-check:
+    name: 语法校验
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: 校验宿主半源码
+        run: node -e "const fs=require('fs');new Function(fs.readFileSync('src/host.js','utf8'));console.log('host.js OK')"
+      - name: 校验浏览器半源码
+        run: node -e "const fs=require('fs');new Function(fs.readFileSync('src/client.js','utf8'));console.log('client.js OK')"
+      - name: 校验工具脚本
+        run: node --check tools/screenshot.mjs
