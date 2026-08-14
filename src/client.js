@@ -159,23 +159,28 @@ return {
       const [data, setData] = React.useState(null)
       const [busy, setBusy] = React.useState(false)
       const [note, setNote] = React.useState('')
-      const load = async () => {
+      const [repo, setRepo] = React.useState('')
+      const load = async (wantRepo) => {
         setBusy(true)
         try {
-          const res = await host.call('git-status', {})
-          if (res && res.ok) { setData(res); setNote('') } else setNote('读取失败: ' + (res && res.error ? res.error : '未知'))
+          const res = await host.call('git-status', { repo: wantRepo || repo })
+          if (res && res.ok) {
+            setData(res)
+            if (!wantRepo && res.repo) setRepo(res.repo.path)
+            setNote('')
+          } else setNote(res && res.error ? res.error : '读取失败')
         } catch (e) { setNote('读取失败') }
         setBusy(false)
       }
-      React.useEffect(() => { load() }, [])
+      React.useEffect(() => { load('') }, [])
       const act = async (op, path) => {
         try {
-          const res = await host.call('git-op', { op: op, path: path })
+          const res = await host.call('git-op', { op: op, path: path, repo: repo })
           setNote(op + (res && res.ok ? ' ✓' : ' 失败: ' + (res && res.error ? res.error : '未知')))
           await load()
         } catch (e) { setNote('操作失败') }
       }
-      const entries = data ? data.entries : []
+      const entries = data && data.entries ? data.entries : []
       const staged = entries.filter((e) => e.staged)
       const unstaged = entries.filter((e) => !e.staged && !e.untracked)
       const untracked = entries.filter((e) => e.untracked)
@@ -189,21 +194,27 @@ return {
           group === 'untracked' ? el('button', { className: 'dk-btn-sm dk-btn-primary', onClick: () => act('stage', e.path) }, '暂存') : null,
         ),
       )
+      const repos = data && Array.isArray(data.repos) ? data.repos : []
       return el('div', null,
         el('div', { className: 'dk-h3' }, 'Git 变更 · 分支: ' + (data && data.branch ? data.branch : '…')),
         el('div', { className: 'dk-uploadrow' },
-          el('button', { className: 'dk-btn', onClick: load, disabled: busy }, busy ? '读取中…' : '刷新'),
-          el('button', { className: 'dk-btn dk-btn-primary', onClick: () => act('stage-all', ''), disabled: entries.length === 0 }, '全部暂存'),
+          repos.length > 1 ? el('select', { className: 'dk-select dk-reposelect', value: repo, title: '切换仓库', onChange: (ev) => { setRepo(ev.target.value); load(ev.target.value) } },
+            repos.map((r) => el('option', { key: r.path, value: r.path }, r.rel || '（根目录）'))) : null,
+          el('button', { className: 'dk-btn', onClick: () => load(), disabled: busy }, busy ? '读取中…' : '刷新'),
+          el('button', { className: 'dk-btn dk-btn-primary', onClick: () => act('stage-all', ''), disabled: entries.length === 0 || !data }, '全部暂存'),
           note ? el('span', { className: 'dk-note' }, note) : null,
         ),
-        entries.length === 0 ? el('div', { className: 'dk-empty' }, '工作区干净，没有变更。') : el('div', null,
+        data && data.repo ? el('div', { className: 'dk-tip' }, '仓库: ' + data.repo.path) : null,
+        !data && note ? el('div', { className: 'dk-empty' }, note) : null,
+        data && entries.length === 0 ? el('div', { className: 'dk-empty' }, '工作区干净，没有变更。') : null,
+        entries.length > 0 ? el('div', null,
           el('div', { className: 'dk-h3' }, '已暂存（' + staged.length + '）'),
           staged.map((e) => row(e, 'staged')),
           el('div', { className: 'dk-h3' }, '未暂存（' + unstaged.length + '）'),
           unstaged.map((e) => row(e, 'unstaged')),
           el('div', { className: 'dk-h3' }, '未跟踪（' + untracked.length + '）'),
           untracked.map((e) => row(e, 'untracked')),
-        ),
+        ) : null,
       )
     }
 

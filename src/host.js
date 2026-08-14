@@ -473,20 +473,54 @@ return {
     })
 
     // ── Git 变更（SCM）：真实 git 操作，借鉴 dsh-web-ui 右侧面板的 stage/unstage/discard ──
-    const gitRun = async (command) => {
-      if (!shell) return { exit: -1, stdout: '', stderr: 'shell 服务不可用' }
+    // 仓库探测：工作区根目录本身 + 一层子目录（上限 8 个）
+    async function detectRepos() {
+      const repos = []
+      const check = async (abs, rel) => {
+        try {
+          const info = await fs.stat(await fs.resolve(rel ? rel + '/.git' : '.git', { cwd: workspaceRoot }))
+          if (info) repos.push({ path: abs, rel: rel })
+        } catch (e) {}
+      }
       try {
+        const rootAbs = await fs.processPath(await fs.resolve('.', { cwd: workspaceRoot }))
+        await check(rootAbs, '')
+        if (repos.length === 0) {
+          const entries = await fs.listDir(await fs.resolve('.', { cwd: workspaceRoot }))
+          for (const e of entries || []) {
+            const name = s(pick(e, ['name', 'path', 'basename']))
+            const kindRaw = pick(e, ['kind', 'type'])
+            const isDir = kindRaw === 'directory' || kindRaw === 'dir' || (e && e.isDirectory === true)
+            if (!isDir || !name || name.charAt(0) === '.') continue
+            await check(rootAbs + '/' + name, name)
+            if (repos.length >= 8) break
+          }
+        }
+      } catch (e) {}
+      return repos
+    }
+    const gitRunAt = async (repoPath, argsStr) => {
+      if (!shell) return { stdout: '' }
+      try {
+        const command = '$ErrorActionPreference = "SilentlyContinue"; $out = (& git -C ' + psQuote(repoPath) + ' ' + argsStr + ') 2>&1 | ForEach-Object { $_.ToString() }; [string]::Join([Environment]::NewLine, $out); exit 0'
         const spec = shell.resolve({ command: command })
         const res = await shell.run(spec)
-        return { exit: n(pick(res, ['exitCode', 'code'])), stdout: s(pick(res, ['stdout', 'output', 'out'])), stderr: s(pick(res, ['stderr', 'errorOutput'])) }
-      } catch (e) { return { exit: -1, stdout: '', stderr: errText(e) } }
+        return { stdout: s(pick(res, ['stdout', 'output', 'out'])) }
+      } catch (e) { return { stdout: errText(e) } }
     }
-    harness.handle('git-status', async () => {
+    harness.handle('git-status', async (args) => {
       try {
         if (!workspaceRoot) return { ok: false, error: '未找到工作区根目录' }
-        const r = await gitRun('$ErrorActionPreference = "Continue"; git -C ' + psQuote(workspaceRoot) + ' status --porcelain=v1 --branch 2>&1')
-        if (r.exit !== 0) return { ok: false, error: 'git status 执行失败: ' + (r.stderr || r.stdout || 'exit ' + r.exit) }
-        const lines = r.stdout.split(/\r?\n/).map((x) => x.trim()).filter((x) => x)
+        const repos = await detectRepos()
+        const want = s(pick(args, ['repo']))
+        let repo = repos[0] || null
+        if (want) repo = repos.find((r) => r.path === want) || repo
+        if (!repo) return { ok: false, error: '未在当前工作区找到 git 仓库（支持根目录与一层子目录自动探测）' }
+        const r = await gitRunAt(repo.path, 'status --porcelain=v1 --branch')
+        const out = r.stdout || ''
+        if (out.indexOf('fatal: not a git repository') >= 0 || out.indexOf('not a git repo') >= 0) return { ok: false, error: '该路径不是有效的 git 仓库' }
+        if (out.indexOf('fatal:') >= 0) return { ok: false, error: out.split(/\r?\n/).find((x) => x.indexOf('fatal:') >= 0) || 'git 执行失败' }
+        const lines = out.split(/\r?\n/).map((x) => x.trim()).filter((x) => x)
         let branch = ''
         let start = 0
         if (lines.length > 0 && lines[0].indexOf('## ') === 0) {
@@ -502,7 +536,7 @@ return {
           const path = ln.slice(3)
           entries.push({ x: x, y: y, path: path, staged: x !== ' ' && x !== '?', unstaged: y !== ' ', untracked: x === '?' })
         }
-        return { ok: true, branch: branch, entries: entries }
+        return { ok: true, branch: branch, entries: entries, repo: repo, repos: repos }
       } catch (e) { return { ok: false, error: errText(e) } }
     })
     harness.handle('git-op', async (args) => {
@@ -510,15 +544,17 @@ return {
         if (!workspaceRoot) return { ok: false, error: '未找到工作区根目录' }
         const op = s(pick(args, ['op']))
         const path = s(pick(args, ['path']))
-        const g = 'git -C ' + psQuote(workspaceRoot)
-        let command = ''
-        if (op === 'stage') command = g + ' add -- ' + psQuote(path)
-        else if (op === 'stage-all') command = g + ' add -A'
-        else if (op === 'unstage') command = g + ' restore --staged -- ' + psQuote(path)
-        else if (op === 'discard') command = g + ' restore -- ' + psQuote(path)
+        const repoPath = s(pick(args, ['repo'])).trim()
+        if (!repoPath) return { ok: false, error: '未指定仓库路径' }
+        let argStr = ''
+        if (op === 'stage') argStr = 'add -- ' + psQuote(path)
+        else if (op === 'stage-all') argStr = 'add -A'
+        else if (op === 'unstage') argStr = 'restore --staged -- ' + psQuote(path)
+        else if (op === 'discard') argStr = 'restore -- ' + psQuote(path)
         else return { ok: false, error: '未知操作' }
-        const r = await gitRun('$ErrorActionPreference = "Continue"; ' + command + ' 2>&1')
-        if (r.exit !== 0) return { ok: false, error: r.stderr || r.stdout || ('exit ' + r.exit) }
+        const r = await gitRunAt(repoPath, argStr)
+        const out = r.stdout || ''
+        if (out.indexOf('fatal:') >= 0 || out.indexOf('error:') >= 0) return { ok: false, error: out.split(/\r?\n/).find((x) => x.indexOf('fatal:') >= 0 || x.indexOf('error:') >= 0) || out.slice(0, 200) }
         return { ok: true, op: op }
       } catch (e) { return { ok: false, error: errText(e) } }
     })
