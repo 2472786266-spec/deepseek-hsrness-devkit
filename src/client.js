@@ -432,7 +432,7 @@ return {
       const canInterrupt = agent.status === 'running' && !agent.isRoot
       const canMessage = !agent.isRoot
       const label = agent.isRoot ? '★ 主会话' : (agent.label || '未命名')
-      const depth = Number(agent.depth) || 0
+      const depth = (Number(agent.depth) || 0) + (agent.isRoot ? 0 : 1)
       // 运行时长（基于状态快照时间）
       let ageText = ''
       if (agent.createdAt && st.updatedAt) {

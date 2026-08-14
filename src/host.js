@@ -349,7 +349,7 @@ return {
             seen.add(id)
             const m = agentMeta.get(id) || {}
             const live = liveMap.has(id)
-            out.push({ id: id, label: s(pick(d, ['label', 'name'])) || s(m.label) || '', parentId: s(pick(d, ['parentId', 'parent'])), depth: n(pick(d, ['depth'])) || 1, isRoot: false, live: live, status: live ? (s(m.status) || 'unknown') : 'ready', createdAt: n(m.createdAt) || n(pick(d, ['createdAt'])) })
+            out.push({ id: id, label: s(pick(d, ['label', 'name'])) || s(m.label) || '', parentId: s(pick(d, ['parentId', 'parent'])), depth: n(pick(d, ['depth'])) || 1, isRoot: false, live: live, status: live ? (s(m.status) || 'unknown') : 'ready', createdAt: n(m.createdAt) || n(pick(d, ['createdAt', 'created', 'startedAt', 'started'])) || null })
           }
         } catch (e) {}
       }
