@@ -8,7 +8,18 @@ return {
 
     const el = React.createElement
 
-    const store = { open: false, tab: 'agents', state: null, connected: false, lastError: '', pendingInsert: null, pendingInsertRef: null, insertHint: '', pos: null, dragging: null }
+    let initSkin = 'light'
+    let initWidth = 680
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        initSkin = window.localStorage.getItem('dsh-devkit-skin') || 'light'
+        const w = parseInt(window.localStorage.getItem('dsh-devkit-width') || '', 10)
+        if (Number.isFinite(w) && w >= 380) initWidth = w
+      }
+    } catch (e) {}
+    const SKIN_LIST = ['light', 'night', 'ocean', 'forest', 'sunset', 'graphite']
+    const SKIN_NAMES = { light: '亮色', night: '暗夜', ocean: '海洋', forest: '森林', sunset: '日落', graphite: '水墨' }
+    const store = { open: false, tab: 'agents', state: null, connected: false, lastError: '', pendingInsert: null, pendingInsertRef: null, insertHint: '', pos: null, dragging: null, skin: initSkin, width: initWidth, resizing: null }
     const listeners = new Set()
     const emit = () => { for (const fn of listeners) { try { fn() } catch (e) {} } }
     const patch = (p) => { Object.assign(store, p); emit() }
@@ -104,8 +115,10 @@ return {
     function AgentsTab(props) {
       const st = props.st || { agents: [] }
       const rows = st.agents || []
+      const u = st.usage
       return el('div', null,
         el('div', { className: 'dk-h3' }, '智能体监督（' + rows.length + ' 个）· 每 2.5 秒自动刷新'),
+        u && u.totals ? el('div', { className: 'dk-tip' }, '模型用量（本会话进程累计）：' + u.totals.calls + ' 次调用 · 输入约 ' + u.totals.input + ' tok · 输出约 ' + u.totals.output + ' tok（启发式估测）') : null,
         rows.length === 0 ? el('div', { className: 'dk-empty' }, '当前没有已注册的智能体。') : rows.map((a) => el(AgentRow, { key: a.id, agent: a })),
       )
     }
@@ -119,14 +132,136 @@ return {
           patch({ insertHint: res && res.ok ? '任务 ' + id + ' 已请求结束' : '失败: ' + (res && res.error ? res.error : '未知') })
         } catch (e) {}
       }
-      return el('div', null,
-        el('div', { className: 'dk-h3' }, '后台任务（' + jobs.length + ' 个）'),
-        jobs.length === 0 ? el('div', { className: 'dk-empty' }, '当前没有后台任务。') : jobs.map((j) => el('div', { className: 'dk-agentrow', key: j.id },
-          el('span', { className: 'dk-mono' }, j.id),
+      const group = { running: [], idle: [], done: [] }
+      for (const j of jobs) {
+        const k = j.status === 'running' ? 'running' : (j.status === 'idle' || j.status === 'pending' || j.status === 'queued') ? 'idle' : 'done'
+        group[k].push(j)
+      }
+      const card = (j) => el('div', { className: 'dk-kcard', key: j.id },
+        el('div', { className: 'dk-kid dk-mono' }, j.id),
+        el('div', { className: 'dk-kkind' }, j.kind || '任务'),
+        el('div', { className: 'dk-agentactions' },
           StatusBadge(j.status),
-          el('span', null, j.kind || ''),
-          el('div', { className: 'dk-agentactions' }, el('button', { className: 'dk-btn-sm dk-btn-danger', onClick: () => kill(j.id) }, '结束')),
-        )),
+          (j.status === 'running' || j.status === 'idle') ? el('button', { className: 'dk-btn-sm dk-btn-danger', onClick: () => kill(j.id) }, '结束') : null,
+        ),
+      )
+      return el('div', null,
+        el('div', { className: 'dk-h3' }, '后台任务看板（' + jobs.length + ' 个）· 按状态分列'),
+        jobs.length === 0 ? el('div', { className: 'dk-empty' }, '当前没有后台任务。') : el('div', { className: 'dk-kanban' },
+          el('div', { className: 'dk-kcol' }, el('div', { className: 'dk-khead' }, '🟢 进行中 ' + group.running.length), group.running.map(card)),
+          el('div', { className: 'dk-kcol' }, el('div', { className: 'dk-khead' }, '🔵 等待 ' + group.idle.length), group.idle.map(card)),
+          el('div', { className: 'dk-kcol' }, el('div', { className: 'dk-khead' }, '⚪ 已结束 ' + group.done.length), group.done.map(card)),
+        ),
+      )
+    }
+
+    function ScmTab(props) {
+      const [data, setData] = React.useState(null)
+      const [busy, setBusy] = React.useState(false)
+      const [note, setNote] = React.useState('')
+      const load = async () => {
+        setBusy(true)
+        try {
+          const res = await host.call('git-status', {})
+          if (res && res.ok) { setData(res); setNote('') } else setNote('读取失败: ' + (res && res.error ? res.error : '未知'))
+        } catch (e) { setNote('读取失败') }
+        setBusy(false)
+      }
+      React.useEffect(() => { load() }, [])
+      const act = async (op, path) => {
+        try {
+          const res = await host.call('git-op', { op: op, path: path })
+          setNote(op + (res && res.ok ? ' ✓' : ' 失败: ' + (res && res.error ? res.error : '未知')))
+          await load()
+        } catch (e) { setNote('操作失败') }
+      }
+      const entries = data ? data.entries : []
+      const staged = entries.filter((e) => e.staged)
+      const unstaged = entries.filter((e) => !e.staged && !e.untracked)
+      const untracked = entries.filter((e) => e.untracked)
+      const row = (e, group) => el('div', { className: 'dk-scmrow', key: group + e.path },
+        el('span', { className: 'dk-scmflag dk-mono', title: '状态 ' + e.x + e.y }, e.x + e.y),
+        el('span', { className: 'dk-scmname', title: e.path }, e.path),
+        el('div', { className: 'dk-agentactions' },
+          group === 'staged' ? el('button', { className: 'dk-btn-sm', onClick: () => act('unstage', e.path) }, '取消暂存') : null,
+          group === 'unstaged' ? el('button', { className: 'dk-btn-sm dk-btn-primary', onClick: () => act('stage', e.path) }, '暂存') : null,
+          group === 'unstaged' ? el('button', { className: 'dk-btn-sm dk-btn-danger', onClick: () => act('discard', e.path) }, '丢弃') : null,
+          group === 'untracked' ? el('button', { className: 'dk-btn-sm dk-btn-primary', onClick: () => act('stage', e.path) }, '暂存') : null,
+        ),
+      )
+      return el('div', null,
+        el('div', { className: 'dk-h3' }, 'Git 变更 · 分支: ' + (data && data.branch ? data.branch : '…')),
+        el('div', { className: 'dk-uploadrow' },
+          el('button', { className: 'dk-btn', onClick: load, disabled: busy }, busy ? '读取中…' : '刷新'),
+          el('button', { className: 'dk-btn dk-btn-primary', onClick: () => act('stage-all', ''), disabled: entries.length === 0 }, '全部暂存'),
+          note ? el('span', { className: 'dk-note' }, note) : null,
+        ),
+        entries.length === 0 ? el('div', { className: 'dk-empty' }, '工作区干净，没有变更。') : el('div', null,
+          el('div', { className: 'dk-h3' }, '已暂存（' + staged.length + '）'),
+          staged.map((e) => row(e, 'staged')),
+          el('div', { className: 'dk-h3' }, '未暂存（' + unstaged.length + '）'),
+          unstaged.map((e) => row(e, 'unstaged')),
+          el('div', { className: 'dk-h3' }, '未跟踪（' + untracked.length + '）'),
+          untracked.map((e) => row(e, 'untracked')),
+        ),
+      )
+    }
+
+    function FilesTab(props) {
+      const [path, setPath] = React.useState('')
+      const [items, setItems] = React.useState(null)
+      const [preview, setPreview] = React.useState(null)
+      const [note, setNote] = React.useState('')
+      const load = async (p) => {
+        try {
+          const res = await host.call('fs-list', { path: p })
+          if (res && res.ok) { setItems(res); setPath(res.rel || ''); setPreview(null); setNote('') }
+          else setNote('读取失败: ' + (res && res.error ? res.error : '未知'))
+        } catch (e) { setNote('读取失败') }
+      }
+      React.useEffect(() => { load('') }, [])
+      const open = (e) => {
+        if (e.isDir) load(path ? path + '/' + e.name : e.name)
+        else show(e.name)
+      }
+      const show = async (name) => {
+        const rel = path ? path + '/' + name : name
+        setNote('加载预览…')
+        try {
+          const res = await host.call('fs-read', { path: rel })
+          if (res && res.ok) { setPreview({ name: name, kind: res.kind, text: res.text || '', dataUrl: res.dataUrl || '', size: res.size || 0 }); setNote('') }
+          else setNote('预览失败: ' + (res && res.error ? res.error : '未知'))
+        } catch (e) { setNote('预览失败') }
+      }
+      const up = () => {
+        if (!path) return
+        const idx = path.lastIndexOf('/')
+        load(idx > 0 ? path.slice(0, idx) : '')
+      }
+      const sizeText = (b) => { const x = Number(b) || 0; if (x >= 1048576) return (x / 1048576).toFixed(2) + ' MB'; if (x >= 1024) return Math.round(x / 1024) + ' KB'; return x ? x + ' B' : '' }
+      const list = items ? items.entries || [] : []
+      return el('div', null,
+        el('div', { className: 'dk-h3' }, '工作区文件浏览 · 预览'),
+        el('div', { className: 'dk-uploadrow' },
+          el('button', { className: 'dk-btn-sm', onClick: up, disabled: !path }, '⬆ 上级'),
+          el('span', { className: 'dk-mono dk-filepath', title: items ? items.abs : '' }, (path ? path : '（根目录）')),
+          note ? el('span', { className: 'dk-note' }, note) : null,
+        ),
+        el('div', { className: 'dk-filetable' },
+          list.length === 0 ? el('div', { className: 'dk-empty' }, '目录为空。') :
+            list.map((e) => el('div', { className: 'dk-filerow', key: e.name, onClick: () => open(e) },
+              el('span', { className: 'dk-ficon' }, e.isDir ? '📁' : '📄'),
+              el('span', { className: 'dk-fname', title: e.name }, e.name),
+              e.isDir ? null : el('span', { className: 'dk-fsize' }, sizeText(e.size)),
+            )),
+        ),
+        preview ? el('div', { className: 'dk-preview' },
+          el('div', { className: 'dk-preview-head' }, '预览: ' + preview.name + ' (' + sizeText(preview.size) + ')',
+            el('button', { className: 'dk-btn-sm dk-preview-close', onClick: () => setPreview(null) }, '关闭')),
+          preview.kind === 'image' ? el('img', { className: 'dk-preview-img', src: preview.dataUrl, alt: preview.name }) :
+            el('pre', { className: 'dk-preview-text' }, preview.text),
+        ) : null,
+        el('div', { className: 'dk-tip' }, '提示：点击文件夹进入，点击文件预览；图片 ≤4MB、文本 ≤256KB 可直接预览，大文件请用编辑器打开。'),
       )
     }
 
@@ -370,29 +505,53 @@ return {
 
     function ConsolePanel() {
       const s = useStore()
-      const st = s.state || { agents: [], jobs: [], media: [], workflows: [], logs: [], errors: [], goal: null }
-      const tabs = [['agents', '智能体'], ['jobs', '任务'], ['media', '图库'], ['workflows', '工作流'], ['goal', '目标']]
-      const style = s.pos ? { left: s.pos.x + 'px', top: s.pos.y + 'px', right: 'auto' } : { right: 28, top: 84, left: 'auto' }
+      const st = s.state || { agents: [], jobs: [], media: [], workflows: [], logs: [], errors: [], goal: null, usage: null }
+      const tabs = [['agents', '智能体'], ['jobs', '任务'], ['scm', '变更'], ['files', '文件'], ['media', '图库'], ['workflows', '工作流'], ['goal', '目标']]
+      const w = Math.min(Math.max(s.width || 680, 380), 1180)
+      const style = s.pos ? { left: s.pos.x + 'px', top: s.pos.y + 'px', right: 'auto', width: w + 'px' } : { right: 28, top: 84, left: 'auto', width: w + 'px' }
       const onHeadDown = (ev) => {
         try {
           const rect = ev && ev.currentTarget && ev.currentTarget.getBoundingClientRect ? ev.currentTarget.getBoundingClientRect() : null
           if (rect) patch({ dragging: { dx: ev.clientX - rect.left, dy: ev.clientY - rect.top } })
         } catch (e) {}
       }
-      const onMove = (ev) => { if (store.dragging) patch({ pos: { x: ev.clientX - store.dragging.dx, y: ev.clientY - store.dragging.dy } }) }
-      const onUp = () => { if (store.dragging) patch({ dragging: null }) }
+      const onResizeDown = (ev) => {
+        try { ev.stopPropagation(); patch({ resizing: { startX: ev.clientX, startW: w } }) } catch (e) {}
+      }
+      const onMove = (ev) => {
+        if (store.resizing) {
+          const nw = Math.min(Math.max(store.resizing.startW + (store.resizing.startX - ev.clientX), 380), 1180)
+          patch({ width: nw })
+          return
+        }
+        if (store.dragging) patch({ pos: { x: ev.clientX - store.dragging.dx, y: ev.clientY - store.dragging.dy } })
+      }
+      const onUp = () => {
+        if (store.resizing) {
+          try { if (typeof window !== 'undefined' && window.localStorage) window.localStorage.setItem('dsh-devkit-width', String(store.width || 680)) } catch (e) {}
+          patch({ resizing: null })
+        }
+        if (store.dragging) patch({ dragging: null })
+      }
+      const setSkin = (v) => {
+        patch({ skin: v })
+        try { if (typeof window !== 'undefined' && window.localStorage) window.localStorage.setItem('dsh-devkit-skin', v) } catch (e) {}
+      }
       const decoded = (st.media || []).filter((m) => m.realPath).length
       return el('div', { className: 'dk-console', style: style, onMouseMove: onMove, onMouseUp: onUp },
+        el('div', { className: 'dk-resize', onMouseDown: onResizeDown, title: '拖拽调整宽度' }),
         el('div', { className: 'dk-head', onMouseDown: onHeadDown },
           el('span', { className: 'dk-title' }, '🧭 开发控制台'),
           tabs.map((t) => el('button', { key: t[0], className: 'dk-tab' + (s.tab === t[0] ? ' dk-tab-active' : ''), onClick: () => patch({ tab: t[0] }) }, t[1])),
+          el('select', { className: 'dk-select dk-skinselect', value: s.skin || 'light', title: '界面皮肤（借鉴皮肤中心，即点即换）', onChange: (ev) => setSkin(ev.target.value) },
+            SKIN_LIST.map((k) => el('option', { key: k, value: k }, SKIN_NAMES[k]))),
           el('div', { className: 'dk-spacer' }),
           el('button', { className: 'dk-btn-sm', onClick: refresh, title: '立即刷新状态' }, '刷新'),
           s.pos ? el('button', { className: 'dk-btn-sm', onClick: () => patch({ pos: null }), title: '复位面板位置' }, '复位') : null,
           el('button', { className: 'dk-close', onClick: () => patch({ open: false }), title: '关闭' }, '✕'),
         ),
         el('div', { className: 'dk-body' },
-          s.tab === 'agents' ? el(AgentsTab, { st: st }) : s.tab === 'jobs' ? el(JobsTab, { st: st }) : s.tab === 'media' ? el(MediaTab, { st: st }) : s.tab === 'workflows' ? el(WorkflowTab, { st: st }) : el(GoalTab, { st: st }),
+          s.tab === 'agents' ? el(AgentsTab, { st: st }) : s.tab === 'jobs' ? el(JobsTab, { st: st }) : s.tab === 'scm' ? el(ScmTab, null) : s.tab === 'files' ? el(FilesTab, null) : s.tab === 'media' ? el(MediaTab, { st: st }) : s.tab === 'workflows' ? el(WorkflowTab, { st: st }) : el(GoalTab, { st: st }),
         ),
         el('div', { className: 'dk-foot' },
           s.insertHint ? el('span', { className: 'dk-note' }, s.insertHint + '  ·  ') : null,
@@ -407,6 +566,13 @@ return {
         refresh()
         return ctx.interval(refresh, 2500)
       }, [])
+      React.useEffect(() => {
+        try {
+          const b = document.body
+          for (const k of SKIN_LIST) b.classList.remove('dk-skin-' + k)
+          b.classList.add('dk-skin-' + (s.skin || 'light'))
+        } catch (e) {}
+      }, [s.skin])
       if (!s.open) return null
       return el(ConsolePanel, null)
     }
@@ -416,6 +582,9 @@ return {
       const st = s.state || { agents: [], jobs: [], media: [] }
       const running = (st.agents || []).filter((a) => a.status === 'running').length
       const total = (st.agents || []).length
+      const u = st.usage
+      const ut = u ? (u.current && u.current.status === 'streaming' ? u.current : u.last) : null
+      const usageText = ut ? '⚡ ' + ut.model + ' · 出 ' + ut.outputTokens + ' tok · ' + (ut.durationMs ? (ut.durationMs / 1000).toFixed(1) + 's' : '生成中') + ' · ' + ut.tps + ' T/s · 入 ' + ut.inputTokens + ' tok' : ''
       React.useEffect(() => {
         if (s.pendingInsert) {
           if (props && props.inputActions) {
@@ -429,6 +598,7 @@ return {
       }, [s.pendingInsert])
       return el('div', { className: 'dk-dock' },
         el('span', { className: 'dk-dockstats' }, '🧭 智能体 ' + total + ' · 运行 ' + running + ' · 任务 ' + (st.jobs ? st.jobs.length : 0) + ' · 图库 ' + (st.media ? st.media.length : 0)),
+        usageText ? el('span', { className: 'dk-dockusage', title: '实时令牌统计（本会话进程累计）' }, usageText) : null,
         el('button', { className: 'dk-btn-sm', onClick: () => patch({ open: true, tab: 'agents' }) }, '控制台'),
         el('button', { className: 'dk-btn-sm', onClick: () => patch({ open: true, tab: 'media' }) }, '图库'),
         el('button', { className: 'dk-btn-sm', onClick: refresh, title: '立即刷新状态' }, '刷新'),
@@ -454,7 +624,7 @@ return {
       const s = useStore()
       return el('div', { className: 'dk-self' },
         el('div', { className: 'dk-self-title' }, '✅ 开发增强套件已激活'),
-        el('div', { className: 'dk-self-line' }, '多模态图库 · 智能体监督 · 后台任务 · 工作流 · 目标总览 · 外部视觉模型识图'),
+        el('div', { className: 'dk-self-line' }, '多模态图库 · 智能体监督 · 任务看板 · Git 变更 · 文件浏览 · 工作流 · 目标总览 · 外部视觉模型识图 · 实时令牌统计 · 皮肤中心'),
         el('div', { className: 'dk-self-row' },
           el('button', { className: 'dk-btn dk-btn-primary', onClick: () => patch({ open: true, tab: 'agents' }) }, '打开控制台'),
           el('button', { className: 'dk-btn', onClick: () => patch({ open: true, tab: 'media' }) }, '打开图库'),
@@ -469,5 +639,6 @@ return {
     slots.inject('tool.view.cordis', () => slots.register({ name: 'tool.view.cordis', key: 'self' }, () => el(SelfCard, null)))
 
     styles.insert(".dk-console{position:fixed;z-index:2147483000;width:min(680px,calc(100vw - 40px));height:min(560px,calc(100vh - 110px));display:flex;flex-direction:column;border-radius:12px;overflow:hidden;box-shadow:0 14px 48px rgba(0,0,0,.38);background:#ffffff;color:#1b1d22;font:13px/1.5 -apple-system,'Segoe UI',Roboto,'Microsoft YaHei',sans-serif;pointer-events:auto;border:1px solid rgba(110,120,140,.28)}.dk-head{display:flex;align-items:center;gap:6px;padding:8px 12px;background:rgba(79,140,255,.08);border-bottom:1px solid rgba(110,120,140,.2);cursor:move;user-select:none;flex-wrap:wrap}.dk-title{font-weight:700;margin-right:4px}.dk-tab{border:none;background:transparent;color:inherit;padding:6px 10px;cursor:pointer;font:inherit;border-radius:6px}.dk-tab:hover{background:rgba(110,120,140,.12)}.dk-tab-active{background:rgba(79,140,255,.18);color:#4f8cff;font-weight:600}.dk-spacer{flex:1}.dk-close{border:none;background:transparent;color:inherit;cursor:pointer;font:inherit;padding:4px 8px;border-radius:6px}.dk-close:hover{background:rgba(239,68,68,.15)}.dk-body{flex:1;overflow:auto;padding:10px 12px}.dk-foot{padding:6px 12px;font-size:11px;color:#8a8f98;border-top:1px solid rgba(110,120,140,.2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.dk-h3{font-size:12px;font-weight:700;margin:10px 0 6px}.dk-empty{color:#9aa0aa;padding:14px 4px;font-size:12px}.dk-agentrow{display:flex;align-items:center;gap:8px;padding:7px 4px;border-top:1px solid rgba(110,120,140,.15);flex-wrap:wrap}.dk-agentname{flex:1;min-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dk-agentactions{display:flex;gap:6px;align-items:center}.dk-status{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:#6b7280;min-width:96px}.dk-dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex:none}.dk-dot-running{background:#22c55e}.dk-dot-idle{background:#3b82f6}.dk-dot-ready{background:#9ca3af}.dk-dot-ended{background:#6b7280;opacity:.5}.dk-dot-unknown{background:#f59e0b}.dk-btn{background:rgba(110,120,140,.14);border:1px solid rgba(110,120,140,.3);color:inherit;border-radius:7px;padding:5px 12px;cursor:pointer;font:inherit}.dk-btn:hover{background:rgba(110,120,140,.24)}.dk-btn:disabled{opacity:.45;cursor:default}.dk-btn-primary{background:#4f8cff;border-color:#4f8cff;color:#fff}.dk-btn-primary:hover{background:#3d7bf0}.dk-btn-sm{background:rgba(110,120,140,.12);border:1px solid rgba(110,120,140,.25);color:inherit;border-radius:6px;padding:3px 9px;cursor:pointer;font:inherit;font-size:12px}.dk-btn-sm:hover{background:rgba(110,120,140,.22)}.dk-btn-danger{color:#ef4444;border-color:rgba(239,68,68,.4)}.dk-btn-danger:hover{background:rgba(239,68,68,.12)}.dk-input{background:rgba(110,120,140,.07);border:1px solid rgba(110,120,140,.3);border-radius:6px;padding:5px 8px;color:inherit;font:inherit;width:100%;box-sizing:border-box}.dk-textarea{resize:vertical;min-height:44px}.dk-msgform{flex-basis:100%;display:flex;flex-direction:column;gap:6px;padding:4px 0 2px}.dk-msgrow{display:flex;gap:8px;align-items:center}.dk-note{color:#f59e0b;font-size:11px}.dk-uploadrow{display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap}.dk-file{width:auto;flex:none}.dk-pathinput{flex:1;min-width:220px}.dk-tip{color:#9aa0aa;font-size:11px;margin:6px 0}.dk-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}.dk-media-card{border:1px solid rgba(110,120,140,.25);border-radius:10px;padding:8px;display:flex;flex-direction:column;gap:5px}.dk-thumb{width:100%;height:96px;object-fit:cover;border-radius:6px;background:rgba(110,120,140,.1)}.dk-thumb-empty{display:flex;align-items:center;justify-content:center;color:#9aa0aa;font-size:11px}.dk-media-name{font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dk-media-meta{font-size:11px;color:#9aa0aa}.dk-media-actions{display:flex;gap:6px}.dk-log{font-size:11px;color:#7c8290;white-space:pre-wrap;word-break:break-all;margin:2px 0;border-left:2px solid rgba(110,120,140,.25);padding-left:6px}.dk-log-err{border-left-color:#ef4444;color:#b45309}.dk-mono{font-family:ui-monospace,Consolas,monospace;font-size:11px;word-break:break-all;color:#7c8290}.dk-goal{border:1px solid rgba(79,140,255,.35);background:rgba(79,140,255,.07);border-radius:10px;padding:10px 12px}.dk-goal-obj{font-weight:600;margin-bottom:4px}.dk-goal-meta{font-size:12px;color:#6b7280}.dk-goal-block{font-size:12px;color:#ef4444;margin-top:4px}.dk-dock{display:flex;gap:8px;align-items:center;padding:4px 8px;border-radius:8px;background:rgba(110,120,140,.06);border:1px solid rgba(110,120,140,.15);flex-wrap:wrap;font-size:12px}.dk-dockstats{color:#6b7280}.dk-dock-copy{flex:1;min-width:200px}.dk-footbtn{display:inline-flex;align-items:center;gap:6px;background:transparent;border:none;color:inherit;cursor:pointer;font:inherit;padding:4px 8px;border-radius:8px}.dk-footbtn:hover{background:rgba(110,120,140,.14)}.dk-footicon{font-size:14px}.dk-footlabel{font-size:12px}.dk-badge{background:#ef4444;color:#fff;border-radius:9px;padding:0 7px;font-size:11px;line-height:16px}.dk-self{border:1px solid rgba(79,140,255,.35);background:rgba(79,140,255,.07);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:6px}.dk-self-title{font-weight:700}.dk-self-line{font-size:12px;color:#6b7280}.dk-self-row{display:flex;gap:8px;margin-top:2px}.dk-select{background:rgba(110,120,140,.08);border:1px solid rgba(110,120,140,.3);border-radius:6px;padding:5px 8px;color:inherit;font:inherit;max-width:220px}.dk-vision{border:1px solid rgba(79,140,255,.35);background:rgba(79,140,255,.07);border-radius:10px;padding:10px 12px;margin:8px 0;display:flex;flex-direction:column;gap:6px}.dk-vision-result{width:100%;min-height:96px;resize:vertical;font-size:12px}.dk-manage-row{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:4px 0}.dk-manage-in{flex:1;min-width:130px}@media (prefers-color-scheme: dark){.dk-console{background:#1e2127;color:#e6e6e6;border-color:rgba(140,150,170,.3)}.dk-foot,.dk-empty,.dk-tip,.dk-media-meta,.dk-self-line,.dk-goal-meta,.dk-log,.dk-dockstats,.dk-status{color:#8b93a1}.dk-note{color:#fbbf24}}")
+    styles.insert(".dk-resize{position:absolute;left:0;top:38%;width:8px;height:64px;cursor:ew-resize;background:rgba(110,120,140,.3);border-radius:0 8px 8px 0;z-index:20}.dk-resize:hover{background:#4f8cff}.dk-skinselect{max-width:76px;font-size:12px;padding:4px 6px}.dk-dockusage{margin-left:8px;font-size:11px;color:#4f8cff;white-space:nowrap}.dk-kanban{display:flex;gap:10px;align-items:flex-start}.dk-kcol{flex:1;min-width:0;background:rgba(110,120,140,.07);border:1px solid rgba(110,120,140,.18);border-radius:8px;padding:8px}.dk-khead{font-size:12px;font-weight:700;margin-bottom:6px}.dk-kcard{background:#ffffff;border:1px solid rgba(110,120,140,.2);border-radius:8px;padding:8px;margin-bottom:6px;box-shadow:0 1px 3px rgba(0,0,0,.06)}.dk-kid{font-size:11px;color:#6b7280;word-break:break-all}.dk-kkind{font-size:12px;margin:2px 0 6px;font-weight:600}.dk-scmrow{display:flex;align-items:center;gap:8px;padding:5px 4px;border-top:1px solid rgba(110,120,140,.15)}.dk-scmflag{width:20px;font-size:11px;color:#b45309}.dk-scmname{flex:1;min-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.dk-filepath{flex:1;min-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:#6b7280}.dk-filetable{max-height:260px;overflow:auto;border:1px solid rgba(110,120,140,.2);border-radius:8px;margin-top:6px}.dk-filerow{display:flex;align-items:center;gap:8px;padding:4px 8px;cursor:pointer;border-top:1px solid rgba(110,120,140,.1)}.dk-filerow:first-child{border-top:none}.dk-filerow:hover{background:rgba(79,140,255,.1)}.dk-ficon{flex:none}.dk-fname{flex:1;min-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.dk-fsize{font-size:11px;color:#8a8f98}.dk-preview{margin-top:10px;border:1px solid rgba(110,120,140,.2);border-radius:8px;overflow:hidden}.dk-preview-head{display:flex;align-items:center;gap:8px;padding:6px 10px;font-size:12px;font-weight:600;background:rgba(79,140,255,.08);border-bottom:1px solid rgba(110,120,140,.18)}.dk-preview-close{margin-left:auto}.dk-preview-img{display:block;max-width:100%;max-height:320px;margin:0 auto}.dk-preview-text{margin:0;padding:10px;font:12px/1.6 Consolas,Menlo,monospace;white-space:pre-wrap;word-break:break-all;max-height:300px;overflow:auto;background:rgba(0,0,0,.03)}.dk-skin-night .dk-console{background:#171a23;color:#dbe2ef;border-color:rgba(140,160,200,.25)}.dk-skin-night .dk-head{background:rgba(120,150,255,.1);border-bottom-color:rgba(140,160,200,.2)}.dk-skin-night .dk-foot{color:#98a2b3;border-top-color:rgba(140,160,200,.2)}.dk-skin-night .dk-tab-active{background:rgba(99,130,255,.28);color:#9db4ff}.dk-skin-night .dk-tab:hover{background:rgba(140,160,200,.14)}.dk-skin-night .dk-agentrow,.dk-skin-night .dk-scmrow{border-top-color:rgba(140,160,200,.16)}.dk-skin-night .dk-empty,.dk-skin-night .dk-note{color:#8b95a8}.dk-skin-night .dk-input,.dk-skin-night .dk-select,.dk-skin-night .dk-textarea{background:#1e2430;color:#dbe2ef;border-color:rgba(140,160,200,.3)}.dk-skin-night .dk-kcard{background:#1e2430;border-color:rgba(140,160,200,.25)}.dk-skin-night .dk-kcol,.dk-skin-night .dk-filetable,.dk-skin-night .dk-preview{border-color:rgba(140,160,200,.25);background:rgba(120,150,255,.05)}.dk-skin-night .dk-preview-head{background:rgba(120,150,255,.14)}.dk-skin-night .dk-preview-text{background:rgba(0,0,0,.25)}.dk-skin-night .dk-dock{background:rgba(23,26,35,.92);color:#dbe2ef}.dk-skin-ocean .dk-console{background:#f5fbff;color:#0f2e3d;border-color:rgba(14,165,233,.3)}.dk-skin-ocean .dk-head{background:rgba(14,165,233,.12)}.dk-skin-ocean .dk-tab-active{background:rgba(14,165,233,.22);color:#0369a1}.dk-skin-ocean .dk-tab:hover{background:rgba(14,165,233,.12)}.dk-skin-ocean .dk-btn-primary{background:#0ea5e9}.dk-skin-forest .dk-console{background:#f6fdf8;color:#12321f;border-color:rgba(22,163,74,.3)}.dk-skin-forest .dk-head{background:rgba(22,163,74,.12)}.dk-skin-forest .dk-tab-active{background:rgba(22,163,74,.22);color:#15803d}.dk-skin-forest .dk-tab:hover{background:rgba(22,163,74,.12)}.dk-skin-forest .dk-btn-primary{background:#16a34a}.dk-skin-sunset .dk-console{background:#fff8f3;color:#3d1d0b;border-color:rgba(249,115,22,.3)}.dk-skin-sunset .dk-head{background:rgba(249,115,22,.12)}.dk-skin-sunset .dk-tab-active{background:rgba(249,115,22,.22);color:#c2410c}.dk-skin-sunset .dk-tab:hover{background:rgba(249,115,22,.12)}.dk-skin-sunset .dk-btn-primary{background:#f97316}.dk-skin-graphite .dk-console{background:#22262e;color:#e2e8f0;border-color:rgba(148,163,184,.3)}.dk-skin-graphite .dk-head{background:rgba(148,163,184,.12)}.dk-skin-graphite .dk-tab-active{background:rgba(148,163,184,.25);color:#cbd5e1}.dk-skin-graphite .dk-tab:hover{background:rgba(148,163,184,.15)}.dk-skin-graphite .dk-foot{color:#94a3b8}.dk-skin-graphite .dk-agentrow,.dk-skin-graphite .dk-scmrow{border-top-color:rgba(148,163,184,.18)}.dk-skin-graphite .dk-empty,.dk-skin-graphite .dk-note{color:#8b95a8}.dk-skin-graphite .dk-input,.dk-skin-graphite .dk-select,.dk-skin-graphite .dk-textarea{background:#2a2f3a;color:#e2e8f0;border-color:rgba(148,163,184,.3)}.dk-skin-graphite .dk-kcard{background:#2a2f3a;border-color:rgba(148,163,184,.25)}.dk-skin-graphite .dk-kcol,.dk-skin-graphite .dk-filetable,.dk-skin-graphite .dk-preview{border-color:rgba(148,163,184,.25);background:rgba(148,163,184,.06)}.dk-skin-graphite .dk-preview-head{background:rgba(148,163,184,.14)}.dk-skin-graphite .dk-dock{background:rgba(34,38,46,.92);color:#e2e8f0}")
   },
 }

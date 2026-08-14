@@ -14,6 +14,7 @@ return {
     const settings = ctx.get('settings')
     const credentials = ctx.get('credentials')
     const attachments = ctx.get('attachments')
+    const tokenMeter = ctx.get('tokenMeter')
 
     const pick = (obj, keys) => {
       if (obj === null || obj === undefined) return undefined
@@ -37,6 +38,9 @@ return {
     let mediaIndex = []
     let mediaLoaded = false
     let mediaUseSubdir = null
+    let usageCurrent = null
+    let usageLast = null
+    const usageTotals = { input: 0, output: 0, calls: 0, startedAt: 0 }
 
     const mediaDirName = '.dsh-media'
     const legacyIndexRel = '.dsh-media-index.json'
@@ -231,6 +235,51 @@ return {
       logBuf.push({ time: now(), message: s(message).slice(0, 500) })
       if (logBuf.length > 100) logBuf.shift()
     })
+    // 实时令牌统计：包裹每次流式模型调用（借鉴 dsh-web-ui 的 live token stats 思路）
+    ctx.on('llm/stream', function (options, next) {
+      let inputTokens = 0
+      try {
+        if (tokenMeter && typeof tokenMeter.estimateMessage === 'function' && options && Array.isArray(options.messages)) {
+          for (const msg of options.messages) {
+            try { inputTokens += Number(tokenMeter.estimateMessage({ role: msg && msg.role, content: msg && msg.content })) || 0 } catch (e) {}
+          }
+        }
+      } catch (e) {}
+      let inner
+      try { inner = next() } catch (e) { throw e }
+      const rec = { provider: s(pick(options, ['provider'])), model: s(pick(options, ['model'])), inputTokens: inputTokens, outputTokens: 0, chars: 0, firstTokenMs: null, durationMs: null, tps: 0, status: 'streaming', startedAt: now() }
+      usageCurrent = rec
+      const src = inner && typeof inner[Symbol.asyncIterator] === 'function' ? inner : null
+      if (!src) { usageCurrent = null; return inner }
+      return {
+        async *[Symbol.asyncIterator]() {
+          const t0 = now()
+          let firstAt = 0
+          try {
+            for await (const chunk of src) {
+              if (!firstAt) { firstAt = now(); rec.firstTokenMs = firstAt - t0 }
+              if (chunk && chunk.type === 'text-delta' && typeof chunk.text === 'string') {
+                rec.chars += chunk.text.length
+                rec.outputTokens = Math.max(1, Math.round(rec.chars / 3.5))
+              }
+              yield chunk
+            }
+          } finally {
+            const end = now()
+            rec.startedAt = t0
+            rec.durationMs = end - t0
+            rec.tps = rec.durationMs > 0 ? Math.round((rec.outputTokens / rec.durationMs) * 1000) / 10 : 0
+            rec.status = 'done'
+            usageTotals.input += rec.inputTokens
+            usageTotals.output += rec.outputTokens
+            usageTotals.calls += 1
+            if (!usageTotals.startedAt) usageTotals.startedAt = t0
+            usageLast = { provider: rec.provider, model: rec.model, inputTokens: rec.inputTokens, outputTokens: rec.outputTokens, firstTokenMs: rec.firstTokenMs, durationMs: rec.durationMs, tps: rec.tps, at: end }
+            usageCurrent = null
+          }
+        },
+      }
+    })
     ctx.on('goal/changed', (payload) => {
       const ch = payload && payload.change
       const g = (ch && ch.goal) || ch
@@ -314,6 +363,15 @@ return {
       if (!goal) goal = goalCache
       let media = []
       try { media = (await loadMediaIndex()).map((m) => ({ ref: s(m.ref), name: s(m.name), mimeType: s(m.mimeType), size: n(m.size), sizeText: sizeText(m.size), realPath: m.realPath ? s(m.realPath) : null, timeText: fmt(n(m.createdAt)) })) } catch (e) {}
+      let usage = null
+      if (usageLast || usageCurrent) {
+        const cur = usageCurrent
+        usage = {
+          last: usageLast,
+          current: cur ? { provider: cur.provider, model: cur.model, inputTokens: cur.inputTokens, outputTokens: cur.outputTokens, chars: cur.chars, firstTokenMs: cur.firstTokenMs, durationMs: null, tps: 0, status: cur.status } : null,
+          totals: { input: usageTotals.input, output: usageTotals.output, calls: usageTotals.calls },
+        }
+      }
       return {
         rootSessionId: rootId,
         agents: out,
@@ -324,6 +382,7 @@ return {
         errors: errBuf.slice(-15).map((er) => ({ time: er.time, timeText: fmt(er.time), id: er.id, message: er.message })),
         media: media,
         mediaRoot: workspaceRoot,
+        usage: usage,
         updatedAt: now(),
       }
     }
@@ -410,6 +469,96 @@ return {
         const caller = agents ? agents.get(s(pick(args, ['sessionId']))) : undefined
         const result = jobs.kill(s(pick(args, ['jobId'])), caller, 'devkit console')
         return { ok: true, result: s(result) }
+      } catch (e) { return { ok: false, error: errText(e) } }
+    })
+
+    // ── Git 变更（SCM）：真实 git 操作，借鉴 dsh-web-ui 右侧面板的 stage/unstage/discard ──
+    const gitRun = async (command) => {
+      if (!shell) return { exit: -1, stdout: '', stderr: 'shell 服务不可用' }
+      try {
+        const spec = shell.resolve({ command: command })
+        const res = await shell.run(spec)
+        return { exit: n(pick(res, ['exitCode', 'code'])), stdout: s(pick(res, ['stdout', 'output', 'out'])), stderr: s(pick(res, ['stderr', 'errorOutput'])) }
+      } catch (e) { return { exit: -1, stdout: '', stderr: errText(e) } }
+    }
+    harness.handle('git-status', async () => {
+      try {
+        if (!workspaceRoot) return { ok: false, error: '未找到工作区根目录' }
+        const r = await gitRun('$ErrorActionPreference = "Continue"; git -C ' + psQuote(workspaceRoot) + ' status --porcelain=v1 --branch 2>&1')
+        if (r.exit !== 0) return { ok: false, error: 'git status 执行失败: ' + (r.stderr || r.stdout || 'exit ' + r.exit) }
+        const lines = r.stdout.split(/\r?\n/).map((x) => x.trim()).filter((x) => x)
+        let branch = ''
+        let start = 0
+        if (lines.length > 0 && lines[0].indexOf('## ') === 0) {
+          branch = lines[0].slice(3).split('...')[0].trim()
+          start = 1
+        }
+        const entries = []
+        for (let i = start; i < lines.length; i++) {
+          const ln = lines[i]
+          if (ln.length < 3) continue
+          const x = ln.charAt(0)
+          const y = ln.charAt(1)
+          const path = ln.slice(3)
+          entries.push({ x: x, y: y, path: path, staged: x !== ' ' && x !== '?', unstaged: y !== ' ', untracked: x === '?' })
+        }
+        return { ok: true, branch: branch, entries: entries }
+      } catch (e) { return { ok: false, error: errText(e) } }
+    })
+    harness.handle('git-op', async (args) => {
+      try {
+        if (!workspaceRoot) return { ok: false, error: '未找到工作区根目录' }
+        const op = s(pick(args, ['op']))
+        const path = s(pick(args, ['path']))
+        const g = 'git -C ' + psQuote(workspaceRoot)
+        let command = ''
+        if (op === 'stage') command = g + ' add -- ' + psQuote(path)
+        else if (op === 'stage-all') command = g + ' add -A'
+        else if (op === 'unstage') command = g + ' restore --staged -- ' + psQuote(path)
+        else if (op === 'discard') command = g + ' restore -- ' + psQuote(path)
+        else return { ok: false, error: '未知操作' }
+        const r = await gitRun('$ErrorActionPreference = "Continue"; ' + command + ' 2>&1')
+        if (r.exit !== 0) return { ok: false, error: r.stderr || r.stdout || ('exit ' + r.exit) }
+        return { ok: true, op: op }
+      } catch (e) { return { ok: false, error: errText(e) } }
+    })
+
+    // ── 文件浏览 + 预览（借鉴 dsh-web-ui 右侧面板文件树/预览，简化版）──
+    harness.handle('fs-list', async (args) => {
+      try {
+        if (!fs || !workspaceRoot) return { ok: false, error: '文件服务不可用' }
+        const rel = s(pick(args, ['path'])).replace(/^[\\/]+/, '')
+        const target = await fs.resolve(rel || '.', { cwd: workspaceRoot })
+        const abs = await fs.processPath(target)
+        const raw = await fs.listDir(target)
+        const entries = (raw || []).map((e) => {
+          const name = s(pick(e, ['name', 'path', 'basename']))
+          const kindRaw = pick(e, ['kind', 'type'])
+          const isDir = kindRaw === 'directory' || kindRaw === 'dir' || (e && e.isDirectory === true)
+          return { name: name, isDir: isDir, size: n(pick(e, ['size', 'bytes'])) }
+        }).filter((e) => e.name && e.name !== '.dsh-media').sort((a, b) => (a.isDir === b.isDir ? (a.name < b.name ? -1 : 1) : a.isDir ? -1 : 1))
+        return { ok: true, abs: abs, rel: rel, entries: entries }
+      } catch (e) { return { ok: false, error: errText(e) } }
+    })
+    harness.handle('fs-read', async (args) => {
+      try {
+        if (!fs || !workspaceRoot) return { ok: false, error: '文件服务不可用' }
+        const rel = s(pick(args, ['path'])).replace(/^[\\/]+/, '')
+        if (!rel) return { ok: false, error: '路径为空' }
+        const target = await fs.resolve(rel, { cwd: workspaceRoot })
+        const bytes = await fs.readBytes(target, undefined, 4 * 1024 * 1024 + 64)
+        if (!bytes || bytes.length === 0) return { ok: false, error: '文件为空或不可读' }
+        const sniff = sniffMime(bytes, rel)
+        if (sniff) {
+          if (bytes.length > 4 * 1024 * 1024) return { ok: false, error: '图片过大（>4MB），请用图库导入查看' }
+          return { ok: true, kind: 'image', dataUrl: 'data:' + sniff.mimeType + ';base64,' + bytesToB64(bytes), size: bytes.length }
+        }
+        if (bytes.length > 256 * 1024) return { ok: false, error: '文本文件过大（>256KB），仅支持预览小文件' }
+        let text = ''
+        try { text = new TextDecoder('utf-8', { fatal: false }).decode(bytes) } catch (e) {
+          for (let i = 0; i < bytes.length; i += 16384) text += String.fromCharCode.apply(null, Array.prototype.slice.call(bytes, i, i + 16384))
+        }
+        return { ok: true, kind: 'text', text: text, size: bytes.length }
       } catch (e) { return { ok: false, error: errText(e) } }
     })
 
