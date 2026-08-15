@@ -8,7 +8,7 @@ return {
 
     const el = React.createElement
 
-    let initSkin = 'light'
+    let initSkin = 'auto'
     try {
       if (typeof window !== 'undefined' && window.localStorage) {
         initSkin = window.localStorage.getItem('dsh-devkit-skin') || 'auto'
@@ -199,7 +199,7 @@ return {
         group[k].push(j)
       }
       const u = st.usage
-      const totalsLine = u && u.totals ? '模型用量（本会话进程累计）：' + u.totals.calls + ' 次调用 · 输入约 ' + u.totals.input + ' tok · 输出约 ' + u.totals.output + ' tok（启发式估测）' : ''
+      const totalsLine = u && u.totals ? '模型用量（本会话进程累计）：' + u.totals.calls + ' 次调用 · 输入 ' + u.totals.input + ' tok · 输出 ' + u.totals.output + ' tok' : ''
       return el('div', { className: 'dk-supervision' },
         el('div', { className: 'dk-super-tabs' },
           el('button', { className: 'dk-tab' + (tab === 'agents' ? ' dk-tab-active' : ''), onClick: () => setTab('agents') }, '智能体 ' + agents.length),
@@ -664,7 +664,7 @@ return {
       return el('div', { className: 'dk-settings' },
         el('div', { className: 'dk-h3' }, '🎨 界面皮肤'),
         el('div', { className: 'dk-uploadrow' },
-          el('select', { className: 'dk-select', value: s.skin || 'light', onChange: (ev) => setSkin(ev.target.value) },
+          el('select', { className: 'dk-select', value: s.skin || 'auto', onChange: (ev) => setSkin(ev.target.value) },
             SKIN_LIST.map((k) => el('option', { key: k, value: k }, SKIN_NAMES[k]))),
           el('span', { className: 'dk-tip' }, '默认「跟随应用主题」使用 DSH 主题色（与界面完全一致）；也可选独立皮肤覆盖。'),
         ),
@@ -754,8 +754,8 @@ return {
     function SelfCard() {
       const s = useStore()
       return el('div', { className: 'dk-self' },
-        el('div', { className: 'dk-self-title' }, '✅ 开发增强套件 v4.7 已激活（跟随应用主题）'),
-        el('div', { className: 'dk-self-line' }, '🧰 工作台（侧边栏底部+状态条）· 🖼 图库（Ctrl+Shift+G）· 🧭 监督（Ctrl+Shift+S）· 全局粘贴识图 · Git 提交 · ⚡ 令牌统计+上下文占用 · 🛰 视觉模型管理在设置页'),
+        el('div', { className: 'dk-self-title' }, '✅ 开发增强套件 v4.8 已激活（跟随主题 + 高可读文字）'),
+        el('div', { className: 'dk-self-line' }, '🧰 工作台 · 🖼 图库 · 🧭 监督（发消息/打开/打断）· 全局粘贴识图 · ⚡ 真实令牌统计 · 面板配色与 DSH 主题一致，次要文字高对比度'),
         el('div', { className: 'dk-tip' }, '打开「设置 → 开发增强套件」配置视觉模型与皮肤。'),
       )
     }
