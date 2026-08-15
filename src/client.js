@@ -8,6 +8,23 @@ return {
 
     const el = React.createElement
 
+    // ── 自建高对比色板（v4.8.2）：运行时检测页面明暗，彻底接管面板配色，不依赖 DSH 主题变量解析 ──
+    const lum = (rgb) => { try { const m = String(rgb).match(/rgba?\((\d+)[, ]+(\d+)[, ]+(\d+)/); if (!m) return 0.5; return (0.299 * (+m[1]) + 0.587 * (+m[2]) + 0.114 * (+m[3])) / 255 } catch (e) { return 0.5 } }
+    const pageBgOf = () => { try { const b = getComputedStyle(document.body).backgroundColor; if (b && b !== 'rgba(0, 0, 0, 0)' && b !== 'transparent') return b; return getComputedStyle(document.documentElement).backgroundColor } catch (e) { return 'rgb(255,255,255)' } }
+    const applyDkTheme = () => {
+      try {
+        const dark = lum(pageBgOf()) < 0.5
+        const v = { '--dk-bg': dark ? '#1e1f24' : '#ffffff', '--dk-bg2': dark ? '#2a2c34' : '#f0f2f5', '--dk-fg': dark ? '#e9ebee' : '#1b1d22', '--dk-fg2': dark ? '#a9b0bb' : '#4b5260', '--dk-accent': dark ? '#5b8cff' : '#2563eb', '--dk-accent-fg': '#ffffff', '--dk-border': dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.12)', '--dk-warn': dark ? '#fbbf24' : '#b45309' }
+        const r = document.documentElement
+        for (const k in v) r.style.setProperty(k, v[k])
+      } catch (e) {}
+    }
+    applyDkTheme()
+    try {
+      const dkMo = new MutationObserver(function () { applyDkTheme() })
+      dkMo.observe(document.body, { attributes: true, childList: false, subtree: false })
+    } catch (e) {}
+
     let initSkin = 'auto'
     try {
       if (typeof window !== 'undefined' && window.localStorage) {
@@ -890,5 +907,12 @@ return {
     styles.insert(".dk-skin-night .dk-panel,.dk-skin-night .dk-workbench{background:#171a23;color:#dbe2ef;border-color:rgba(140,160,200,.25)}.dk-skin-ocean .dk-panel,.dk-skin-ocean .dk-workbench{background:#f5fbff;color:#0f2e3d;border-color:rgba(14,165,233,.3)}.dk-skin-forest .dk-panel,.dk-skin-forest .dk-workbench{background:#f6fdf8;color:#12321f;border-color:rgba(22,163,74,.3)}.dk-skin-sunset .dk-panel,.dk-skin-sunset .dk-workbench{background:#fff8f3;color:#3d1d0b;border-color:rgba(249,115,22,.3)}.dk-skin-graphite .dk-panel,.dk-skin-graphite .dk-workbench{background:#22262e;color:#e2e8f0;border-color:rgba(148,163,184,.3)}")
     // ── 可读性覆盖（v4.8）：次要文字统一用主文字色 72% 深度，任何主题下保证对比度 ──
     styles.insert(".dk-tip,.dk-empty,.dk-mono,.dk-status,.dk-dockstats,.dk-ver,.dk-media-meta,.dk-log,.dk-kid,.dk-goal-meta,.dk-fsize,.dk-filepath,.dk-scmflag,.dk-depth,.dk-age,.dk-toolbtn-count{color:color-mix(in srgb,var(--dsw-alias-label-primary,#1b1d22) 72%,transparent)!important;font-size:12px}.dk-tab{color:color-mix(in srgb,var(--dsw-alias-label-primary,#1b1d22) 78%,transparent)}.dk-tab-active{color:var(--dsw-alias-bg-base,#fff)!important;background:var(--dsw-alias-brand-primary,#4f8cff)!important}.dk-note{color:var(--dsw-alias-state-warn-primary,#b45309)!important;font-weight:500}.dk-goalline{color:color-mix(in srgb,var(--dsw-alias-label-primary,#1b1d22) 88%,transparent)!important}.dk-h3{color:var(--dsw-alias-label-primary,#1b1d22)}.dk-panel-title{color:var(--dsw-alias-label-primary,#1b1d22)}.dk-workbench{height:calc(100vh - 16px)}")
+    // ── v4.8.2 自建色板接管（实色高对比，根治白字白底）──
+    styles.insert(".dk-workbench,.dk-panel{background:var(--dk-bg)!important;color:var(--dk-fg)!important;border-color:var(--dk-border)!important}.dk-panel-head{background:var(--dk-bg2)!important;border-bottom:1px solid var(--dk-border)!important}.dk-super-tabs{border-bottom:1px solid var(--dk-border)!important}")
+    styles.insert(".dk-panel-title,.dk-h3,.dk-khead,.dk-goal-obj,.dk-agentname,.dk-media-name,.dk-fname,.dk-kkind{color:var(--dk-fg)!important}")
+    styles.insert(".dk-tab{color:var(--dk-fg2)!important}.dk-tab:hover{background:var(--dk-bg2)!important}.dk-tab-active{background:var(--dk-accent)!important;color:var(--dk-accent-fg)!important}")
+    styles.insert(".dk-tip,.dk-empty,.dk-mono,.dk-status,.dk-dockstats,.dk-ver,.dk-media-meta,.dk-log,.dk-kid,.dk-goal-meta,.dk-fsize,.dk-filepath,.dk-scmflag,.dk-depth,.dk-age,.dk-toolbtn-count,.dk-self-line{color:var(--dk-fg2)!important}")
+    styles.insert(".dk-btn,.dk-btn-sm,.dk-input,.dk-select,.dk-textarea{background:var(--dk-bg2)!important;color:var(--dk-fg)!important;border:1px solid var(--dk-border)!important}.dk-btn-primary{background:var(--dk-accent)!important;color:var(--dk-accent-fg)!important;border-color:var(--dk-accent)!important}")
+    styles.insert(".dk-agentrow{border-top:1px solid var(--dk-border)!important}.dk-note{color:var(--dk-warn)!important}.dk-dock{background:var(--dk-bg2)!important;border:1px solid var(--dk-border)!important}.dk-workbench{height:calc(100vh - 16px)!important}")
   },
 }
