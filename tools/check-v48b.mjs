@@ -1,0 +1,33 @@
+﻿const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function main() {
+  const res = await fetch('http://127.0.0.1:9222/json/list');
+  const list = await res.json();
+  const page = list.find((t) => t.type === 'page' && t.url.indexOf('3080') >= 0);
+  const ws = new WebSocket(page.webSocketDebuggerUrl);
+  let id = 0; const pending = new Map();
+  await new Promise((r, j) => { ws.onopen = r; ws.onerror = () => j(new Error('ws')); });
+  const send = (m, p = {}) => new Promise((r, j) => { const i = ++id; pending.set(i, { r, j }); ws.send(JSON.stringify({ id: i, method: m, params: p })); });
+  ws.onmessage = (ev) => { const m = JSON.parse(ev.data); if (m.id && pending.has(m.id)) { const q = pending.get(m.id); pending.delete(m.id); m.error ? q.j(new Error(m.error.message)) : q.r(m.result); } };
+  const ev = async (e) => { const r = await send('Runtime.evaluate', { expression: e, returnByValue: true, awaitPromise: true }); return r.result ? r.result.value : undefined; };
+  await send('Runtime.enable');
+  console.log('HAS-DOCK:', await ev(`!!document.querySelector('.dk-dock')`));
+  console.log('SKIN-CLASS:', await ev(`(() => { const c = document.body.className || ''; const m = c.match(/dk-skin-\w+/g); return m ? m.join(',') : 'none' })()`));
+  await ev(`(() => { const b = Array.from(document.querySelectorAll('.dk-dock .dk-btn-sm')).find((x) => x.textContent.indexOf('工作台') >= 0); if (b) b.click(); return true })()`);
+  await sleep(1500);
+  console.log('WB-EXISTS:', await ev(`!!document.querySelector('.dk-workbench')`));
+  console.log('WB-BG:', await ev(`(() => { const w = document.querySelector('.dk-workbench'); return w ? getComputedStyle(w).backgroundColor : 'none' })()`));
+  console.log('WB-COLOR:', await ev(`(() => { const w = document.querySelector('.dk-workbench'); return w ? getComputedStyle(w).color : 'none' })()`));
+  console.log('TOKENS:', await ev(`(() => { const cs = getComputedStyle(document.body); return ['base','layer1','layer2','label1','label2'].map((k) => k + '=' + cs.getPropertyValue('--dsw-alias-' + ({base:'bg-base',layer1:'bg-layer-1',layer2:'bg-layer-2',label1:'label-primary',label2:'label-secondary'}[k])).trim()).join(' | ') })()`));
+  console.log('TABS:', await ev(`(() => Array.from(document.querySelectorAll('.dk-super-tabs .dk-tab')).map((t) => t.textContent.trim() + '[' + getComputedStyle(t).color + ']').join(' | '))()`));
+  console.log('TAB-ACTIVE-BG:', await ev(`(() => { const t = document.querySelector('.dk-tab-active'); return t ? getComputedStyle(t).backgroundColor + '/' + getComputedStyle(t).color : 'none' })()`));
+  console.log('ROWS:', await ev(`document.querySelectorAll('.dk-agentrow').length`));
+  console.log('ROW-NAME-COLOR:', await ev(`(() => { const n = document.querySelector('.dk-agentname'); return n ? getComputedStyle(n).color : 'none' })()`));
+  console.log('STATUS-COLOR:', await ev(`(() => { const s = document.querySelector('.dk-status'); return s ? getComputedStyle(s).color : 'none' })()`));
+  console.log('TIP-COLOR:', await ev(`(() => { const t = document.querySelector('.dk-tip'); return t ? getComputedStyle(t).color + '/' + getComputedStyle(t).fontSize : 'none' })()`));
+  console.log('HEAD-BG:', await ev(`(() => { const h = document.querySelector('.dk-workbench .dk-panel-head'); return h ? getComputedStyle(h).backgroundColor : 'none' })()`));
+  console.log('BODY-CHILDREN:', await ev(`(() => { const b = document.querySelector('.dk-workbench'); if (!b) return 'none'; return Array.from(b.children).map((c) => c.className).join(' | ') })()`));
+  console.log('BODY-HEIGHT:', await ev(`(() => { const b = document.querySelector('.dk-workbench'); return b ? b.getBoundingClientRect().height + 'px' : 'none' })()`));
+  console.log('SUPERVIS-HTML-LEN:', await ev(`(() => { const s = document.querySelector('.dk-supervision'); return s ? s.innerHTML.length : 'none' })()`));
+  ws.close();
+}
+main().catch((e) => { console.error('ERR', e.message); process.exit(1); });

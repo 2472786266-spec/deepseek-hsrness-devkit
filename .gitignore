@@ -4,3 +4,5 @@ node_modules/
 Thumbs.db
 .dsh-media-*.txt
 .dsh-media-index.json
+
+.edge-profile/
