@@ -11,6 +11,7 @@ async function main() {
   ws.onmessage = (ev) => { const m = JSON.parse(ev.data); if (m.id && pending.has(m.id)) { const q = pending.get(m.id); pending.delete(m.id); m.error ? q.j(new Error(m.error.message)) : q.r(m.result); } };
   await send('Page.enable');
   await send('Emulation.setDeviceMetricsOverride', { width: 256, height: 256, deviceScaleFactor: 1, mobile: false });
+  await send('Emulation.setDefaultBackgroundColorOverride', { color: { r: 0, g: 0, b: 0, a: 0 } });
   const fileUrl = 'file:///C:/Users/Admin/Desktop/deepseek-Hsrness/dsh-devkit/assets/dsh-logo.svg';
   await send('Page.navigate', { url: fileUrl });
   await sleep(2500);
