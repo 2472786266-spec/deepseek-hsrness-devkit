@@ -592,7 +592,9 @@ return {
       try {
         // DSH 进程注入了不完整的 GIT_CONFIG_* 环境变量（缺 KEY_0），git 启动即报
         // "missing config key GIT_CONFIG_KEY_0"；执行前先清除这三个变量
-        const command = 'Remove-Item Env:GIT_CONFIG_COUNT -ErrorAction SilentlyContinue; Remove-Item Env:GIT_CONFIG_VALUE_0 -ErrorAction SilentlyContinue; Remove-Item Env:GIT_CONFIG_KEY_0 -ErrorAction SilentlyContinue; & git -C ' + psQuote(repoPath) + ' ' + argsStr + ' 2>&1'
+        // 修复(v4.8.3)：沙箱 shell 环境下命令末尾的 `2>&1` 会把 git 的 stdout 整个吞掉（输出为空、exit 0）。
+        // 执行器本身会分别捕获 stdout/stderr，所以不再手动 2>&1；git 的报错仍能通过 stderr 读到。
+        const command = 'Remove-Item Env:GIT_CONFIG_COUNT -ErrorAction SilentlyContinue; Remove-Item Env:GIT_CONFIG_VALUE_0 -ErrorAction SilentlyContinue; Remove-Item Env:GIT_CONFIG_KEY_0 -ErrorAction SilentlyContinue; & git -C ' + psQuote(repoPath) + ' ' + argsStr
         const spec = shell.resolve({ command: command })
         const res = await shell.run(spec)
         const t = (v) => (v && typeof v === 'object' && typeof v.text === 'string') ? v.text : s(v)
